@@ -3,6 +3,8 @@ import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createCanvas } from "@napi-rs/canvas";
 import sharp from "sharp";
 import { createWorker } from "tesseract.js";
+import path from "path";
+import { pathToFileURL } from "url";
 
 export const config = {
   api: { bodyParser: { sizeLimit: "35mb" } },
@@ -43,18 +45,28 @@ export default async function handler(req, res) {
     if (!fileBase64) return res.status(400).json({ error: "fileBase64 manquant" });
 
     const pdfData = b64ToUint8(fileBase64);
-    const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+    const standardFontDataUrl = pathToFileURL(
+      path.join(process.cwd(), "node_modules", "pdfjs-dist", "standard_fonts") + path.sep
+    ).href;
+    const pdf = await pdfjsLib.getDocument({ data: pdfData, disableWorker: true, standardFontDataUrl }).promise;
 
     const pagesToProcess = Math.min(Math.max(1, maxPages || 1), pdf.numPages);
 
     const worker = await createWorker();
-    await worker.loadLanguage("fra+eng");
-    await worker.initialize("fra+eng");
+    // Support different tesseract.js APIs (v2/v4/v5)
+    if (typeof worker.loadLanguage === "function") {
+      await worker.loadLanguage("fra+eng");
+    }
+    if (typeof worker.initialize === "function") {
+      await worker.initialize("fra+eng");
+    } else if (typeof worker.reinitialize === "function") {
+      await worker.reinitialize("fra+eng");
+    }
 
     let fullText = "";
 
     for (let pageNum = 1; pageNum <= pagesToProcess; pageNum++) {
-      const png = await renderPdfPageToPngBuffer(pdf, pageNum, 3.2); // ↑ résolution
+      const png = await renderPdfPageToPngBuffer(pdf, pageNum, 2.6); // ↑ résolution
       const pre = await preprocessForOcr(png);
 
       const { data } = await worker.recognize(pre);
@@ -62,7 +74,9 @@ export default async function handler(req, res) {
       if (t) fullText += "\n" + t;
     }
 
-    await worker.terminate();
+    if (typeof worker.terminate === "function") {
+      await worker.terminate();
+    }
 
     const out = (fullText || "").trim();
     return res.status(200).json({

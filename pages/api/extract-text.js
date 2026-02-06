@@ -1,4 +1,4 @@
-// pages/api/extract-text.js ✅ VERSION STABLE (Next.js 16 + Turbopack)
+// pages/api/extract-text.js (stable for Next.js 16 + Turbopack)
 // - Pas de pdf-parse
 // - Pas de pdf-to-img
 // - Pas de pdf-lib
@@ -6,6 +6,8 @@
 // - OCR fallback via rendu PNG (pdfjs-dist + canvas) + Tesseract
 
 import { createCanvas, loadImage } from "canvas";
+import path from "path";
+import { pathToFileURL } from "url";
 import Tesseract from "tesseract.js";
 
 export const config = {
@@ -111,10 +113,14 @@ export default async function handler(req, res) {
  */
 async function extractTextWithPdfjs(uint8Array) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const standardFontDataUrl = pathToFileURL(
+    path.join(process.cwd(), "node_modules", "pdfjs-dist", "standard_fonts") + path.sep
+  ).href;
 
   const loadingTask = pdfjs.getDocument({
     data: uint8Array,
     disableWorker: true,
+    standardFontDataUrl,
   });
 
   const pdfDoc = await loadingTask.promise;
@@ -141,10 +147,14 @@ async function extractTextWithPdfjs(uint8Array) {
  */
 async function renderFirstPageToPng(uint8Array, { scale = 2.0 } = {}) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const standardFontDataUrl = pathToFileURL(
+    path.join(process.cwd(), "node_modules", "pdfjs-dist", "standard_fonts") + path.sep
+  ).href;
 
   const loadingTask = pdfjs.getDocument({
     data: uint8Array,
     disableWorker: true,
+    standardFontDataUrl,
   });
 
   const pdfDoc = await loadingTask.promise;

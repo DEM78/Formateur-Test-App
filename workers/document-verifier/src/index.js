@@ -131,6 +131,12 @@ export default {
       // ========= Extraction ciblée =========
       const extracted = extractCniFieldsFromOcr(ocrText);
 
+      // Fallback: if labels not detected, try to find expected names directly in OCR text
+      if ((!extracted.nom || !extracted.prenom) && ocrText) {
+        if (!extracted.nom && textContainsNormalized(ocrText, nomAttendu)) extracted.nom = nomAttendu;
+        if (!extracted.prenom && textContainsNormalized(ocrText, prenomAttendu)) extracted.prenom = prenomAttendu;
+      }
+
       // ========= Comparaison =========
       const nomCorrespond = compareTextRobust(extracted.nom, nomAttendu);
       const prenomCorrespond = prenomsAllExpectedInFound(extracted.prenom, prenomAttendu);
@@ -380,6 +386,21 @@ function compareTextRobust(text1, text2) {
 
   const sim = 1 - dist / maxLen;
   return sim >= 0.85;
+}
+
+function textContainsNormalized(text, expected) {
+  if (!text || !expected) return false;
+  const normalize = (str) =>
+    String(str)
+      .toUpperCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^A-Z0-9]/g, "")
+      .trim();
+  const t = normalize(text);
+  const e = normalize(expected);
+  if (!t || !e) return false;
+  return t.includes(e);
 }
 
 function prenomsAllExpectedInFound(found, expected) {

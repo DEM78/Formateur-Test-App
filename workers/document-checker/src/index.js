@@ -1,4 +1,4 @@
-// workers/document-checker/src/index.js
+﻿// workers/document-checker/src/index.js
 // Document checker global: URSSAF / fiscale / assurance / casier / diplome / declaration / kbis
 // - input: pdf_text OR image base64
 // - output: OK / REVIEW / FAIL
@@ -188,6 +188,20 @@ export default {
       // règles par type
       const validity = evaluateValidityByType(docType, dates, now);
 
+      // -------- 4b) Extract company fields (SIREN/SIRET/...) --------
+      const companyFields = extractCompanyFields(cleanText);
+      const aiCompanyFields =
+        (!companyFields.siren || !companyFields.siret || !companyFields.denomination) && env.AI
+          ? await extractCompanyFieldsWithAI(cleanText, env).catch(() => ({}))
+          : {};
+      const mergedCompany = {
+        siren: companyFields.siren || aiCompanyFields.siren || "",
+        siret: companyFields.siret || aiCompanyFields.siret || "",
+        rcs: companyFields.rcs || aiCompanyFields.rcs || "",
+        denomination: companyFields.denomination || aiCompanyFields.denomination || "",
+        adresse: companyFields.adresse || aiCompanyFields.adresse || "",
+      };
+
       // -------- 5) Decide status --------
       // FAIL si expiré clair
       if (validity.expired === true) {
@@ -202,6 +216,7 @@ export default {
               foundFirstName: extractedNames.prenom || "",
               dates: validity,
               keywordsScore,
+              company: mergedCompany,
             },
             debug: { ocrMethod, textLength: cleanText.length },
           },
@@ -224,6 +239,7 @@ export default {
               foundFirstName: extractedNames.prenom || "",
               dates: validity,
               keywordsScore,
+              company: mergedCompany,
             },
             debug: { ocrMethod, textLength: cleanText.length },
           },
@@ -245,6 +261,7 @@ export default {
               foundFirstName: extractedNames.prenom || "",
               dates: validity,
               keywordsScore,
+              company: mergedCompany,
             },
             debug: { ocrMethod, textLength: cleanText.length },
           },
@@ -272,6 +289,7 @@ export default {
             foundFirstName: extractedNames.prenom || "",
             dates: validity,
             keywordsScore,
+            company: mergedCompany,
           },
           debug: { ocrMethod, textLength: cleanText.length },
         },
@@ -733,4 +751,88 @@ function evaluateValidityByType(docType, datesObj, now) {
     hasUsableDate,
     rule: "expiry_based",
   };
+}
+
+// ---------------- company extraction ----------------
+
+function extractCompanyFields(text) {
+  const t = normalizeDocText(text);
+
+  const siren = extractNumberAfterLabels(t, ["SIREN", "S I R E N"], 9) || extractFirstNumber(t, 9);
+  const siret = extractNumberAfterLabels(t, ["SIRET", "S I R E T"], 14) || extractFirstNumber(t, 14);
+
+  const rcsMatch = t.match(/RCS\s+([A-ZÀ-ÖØ-Ý\s-]+)\s*(\d{9})?/i);
+  const rcs = rcsMatch ? rcsMatch[1].trim() : "";
+
+  const denomMatch =
+    t.match(/DENOMINATION\s*(SOCIALE)?[:\s]+([^\n]{5,120})/i) ||
+    t.match(/RAISON\s+SOCIALE[:\s]+([^\n]{5,120})/i) ||
+    t.match(/([A-Z0-9&\s'.-]{8,80})\s+SIREN/i);
+  const denomination = denomMatch ? String(denomMatch[2] || denomMatch[1] || "").replace(/\s{2,}/g, " ").trim() : "";
+
+  const adresseMatch = t.match(/(\d+\s+[^\n]{6,80}\s+\d{5}\s+[A-ZÀ-ÖØ-Ý][A-Za-zÀ-ÿ\s-]+)/i);
+  const adresse = adresseMatch ? adresseMatch[1].trim() : "";
+
+  return { siren, siret, rcs, denomination, adresse };
+}
+
+function extractNumberAfterLabels(text, labels, digits) {
+  const upper = String(text || "").toUpperCase();
+  for (const label of labels) {
+    const re = new RegExp(`${label}\\s*[:\\-\\s]*([0-9\\s]{${digits},})`, "i");
+    const match = upper.match(re);
+    if (match && match[1]) {
+      const cleaned = match[1].replace(/\D/g, "").slice(0, digits);
+      if (cleaned.length === digits) return cleaned;
+    }
+  }
+  return "";
+}
+
+function extractFirstNumber(text, digits) {
+  const match = String(text || "").match(new RegExp(`\\b(\\d{${digits}})\\b`));
+  return match ? match[1] : "";
+}
+
+async function extractCompanyFieldsWithAI(text, env) {
+  const prompt =
+    "Tu es un extracteur d'informations. " +
+    "À partir du texte d'un document d'entreprise français, retourne uniquement un JSON valide avec les clés: " +
+    "siren, siret, rcs, denomination, adresse. " +
+    "Si une valeur est introuvable, mets une chaîne vide. " +
+    "Texte:\n" +
+    text;
+
+  const aiRes = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
+    prompt,
+    max_tokens: 400,
+  });
+
+  const raw = String(aiRes?.description || aiRes?.response || "").trim();
+  const json = safeParseJsonFromText(raw);
+  if (!json || typeof json !== "object") return {};
+
+  return {
+    siren: String(json.siren || "").replace(/\D/g, "").slice(0, 9),
+    siret: String(json.siret || "").replace(/\D/g, "").slice(0, 14),
+    rcs: String(json.rcs || "").trim(),
+    denomination: String(json.denomination || "").trim(),
+    adresse: String(json.adresse || "").trim(),
+  };
+}
+
+function safeParseJsonFromText(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    // fallback: try to extract first JSON object in text
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
 }

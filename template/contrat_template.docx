@@ -1,0 +1,59 @@
+Entreprise (Caplogy)
+
+{employer_denomination}
+
+{employer_forme_juridique}
+
+{employer_capital}
+
+{employer_siren}
+
+{employer_siret}
+
+{employer_rcs}
+
+{employer_adresse}
+
+{employer_representant}
+
+{employer_fonction_representant}
+
+Prestataire (formateur)
+
+{prestataire_nom}
+
+{prestataire_prenom}
+
+{prestataire_denomination}
+
+{prestataire_siren}
+
+{prestataire_siret}
+
+{prestataire_rcs}
+
+{prestataire_adresse}
+
+{prestataire_representant}
+
+{prestataire_fonction_representant}
+
+Modalités
+
+{date_signature}
+
+{lieu_signature}
+
+{date_debut}
+
+{date_fin}
+
+{duree_mission}
+
+{taux_journalier}
+
+Compétences (optionnel)
+
+{skills_raw} (ex: "cybersecurite, linux, python")
+
+{skills_list} (affichage multi-lignes)

@@ -1,7 +1,8 @@
-// components/formateur/Step4Contract.jsx
-import { useState, useEffect } from "react";
+﻿// components/formateur/Step4Contract.jsx
+import { useState, useEffect, useRef } from "react";
 
 export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
+  const [employerChoice, setEmployerChoice] = useState("caplogy");
   const [employer, setEmployer] = useState({
     denomination: "Caplogy",
     siren: "",
@@ -31,28 +32,50 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
   const [variables, setVariables] = useState({
     date_signature: new Date().toISOString().split("T")[0],
     lieu_signature: "Paris",
-    taux_journalier: "",
-    duree_mission: "",
-    date_debut: "",
-    date_fin: "",
   });
+
+  const [signatureDataUrl, setSignatureDataUrl] = useState("");
+  const [signatureConfirmed, setSignatureConfirmed] = useState(false);
+  const canvasRef = useRef(null);
+  const isDrawingRef = useRef(false);
+  const lastPointRef = useRef({ x: 0, y: 0 });
 
   const [loadingEmployer, setLoadingEmployer] = useState(false);
   const [loadingPrestataire, setLoadingPrestataire] = useState(false);
-  const [generatingContract, setGeneratingContract] = useState(false);
-  const [contractPreview, setContractPreview] = useState("");
+  const [générétingContract, setGeneratingContract] = useState(false);
 
   // ✅ Petit état d’erreur lisible (au lieu de crash)
   const [apiWarning, setApiWarning] = useState("");
+  const [extractStatus, setExtractStatus] = useState("idle");
 
   useEffect(() => {
-    autoFillCaplogy();
+    autoFillEmployer(employerChoice);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [employerChoice]);
+
 
   useEffect(() => {
     autoExtractPrestataire();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const ratio = window.devicePixelRatio || 1;
+    const width = 520;
+    const height = 160;
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#0f172a";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
   }, []);
 
   // ✅ Fetch JSON SAFE (si HTML -> message clair)
@@ -72,7 +95,7 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
 
     let data = {};
     try {
-      data = trimmed ? JSON.parse(trimmed) : {};
+      data = trimmed ?JSON.parse(trimmed) : {};
     } catch (e) {
       throw new Error(
         `Réponse JSON invalide.\nURL: ${url}\nStatus: ${res.status}\nRaw: ${trimmed.slice(0, 200)}...`
@@ -86,6 +109,32 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
     return data;
   };
 
+  const autoFillEmployer = async (choice) => {
+    setExtractStatus("loading_employer");
+    setLoadingEmployer(true);
+    setApiWarning("");
+
+    try {
+      const data = await fetchJsonSafe(`/api/employer?company=${choice}`);
+
+      if (data?.employer) {
+        setExtractStatus("employer_ok");
+        setEmployer((prev) => ({
+          ...prev,
+          ...data.employer,
+        }));
+      }
+    } catch (err) {
+      setExtractStatus("employer_error");
+      console.warn("autoFillEmployer fallback:", err?.message || err);
+      setApiWarning(
+        "?Auto-remplissage employeur indisponible (route /api/employer absente ou erreur). Remplissez manuellement si besoin."
+      );
+    } finally {
+      setLoadingEmployer(false);
+    }
+  };
+
   const fileToBase64 = (file) =>
     new Promise((resolve, reject) => {
       const r = new FileReader();
@@ -94,40 +143,15 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
       r.readAsDataURL(file);
     });
 
-  const autoFillCaplogy = async () => {
-    setLoadingEmployer(true);
-    setApiWarning("");
-
-    try {
-      // ✅ Si tu n’as pas /api/employer, on ne plante pas.
-      // Tu as mis dans l’arbo “extract-contrat-fields.js” etc, mais pas employer.js.
-      // Donc on tente, et si ça 404 => fallback.
-      const data = await fetchJsonSafe("/api/employer?query=caplogy");
-
-      if (data?.employer) {
-        setEmployer((prev) => ({
-          ...prev,
-          ...data.employer,
-        }));
-      }
-    } catch (err) {
-      console.warn("autoFillCaplogy fallback:", err?.message || err);
-      setApiWarning(
-        "⚠️ Auto-remplissage employeur indisponible (route /api/employer absente ou erreur). Remplissez manuellement si besoin."
-      );
-      // fallback déjà dans state (denomination = Caplogy)
-    } finally {
-      setLoadingEmployer(false);
-    }
-  };
 
   const autoExtractPrestataire = async () => {
+    setExtractStatus("loading_prestataire");
     setLoadingPrestataire(true);
     setApiWarning("");
 
     try {
       const documents = [];
-      const docTypes = ["kbis", "urssaf", "fiscale", "recpActivite"];
+      const docTypes = ["kbis", "urssaf", "fiscale", "recpActivite", "assurance"];
 
       for (const type of docTypes) {
         const file = formData[type];
@@ -138,12 +162,12 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
       }
 
       if (documents.length === 0) {
+        setExtractStatus("no_docs");
         setLoadingPrestataire(false);
         return;
       }
 
-      // ✅ IMPORTANT: ton fichier est "extract-contrat-fields.js"
-      // donc l'URL doit être "/api/extract-contrat-fields"
+      // API extraction contrat
       const data = await fetchJsonSafe("/api/extract-contrat-fields", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -155,12 +179,15 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
       });
 
       if (data?.prestataire) {
+        setExtractStatus("prestataire_ok");
         setPrestataire((prev) => ({
           ...prev,
           ...data.prestataire,
         }));
       }
     } catch (err) {
+      setExtractStatus("prestataire_error");
+      setExtractStatus("employer_error");
       console.warn("Erreur auto-extract prestataire:", err?.message || err);
       setApiWarning(
         "⚠️ Auto-extraction prestataire indisponible (route /api/extract-contrat-fields introuvable ou erreur). Remplissez manuellement si besoin."
@@ -178,7 +205,7 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
       const res = await fetch("/api/generate-contract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ employer, prestataire, variables }),
+        body: JSON.stringify({ employer, prestataire, variables: { ...variables, signature_data_url: signatureDataUrl, signature_confirmed: signatureConfirmed } }),
       });
 
       // ✅ si erreur, lire texte pour debug (souvent HTML)
@@ -195,72 +222,109 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
         // si JSON
         try {
           const j = JSON.parse(trimmed || "{}");
-          throw new Error(j?.error || "Erreur génération contrat");
+          throw new Error(j?.error || "Erreur générétion contrat");
         } catch {
-          throw new Error("Erreur génération contrat");
+          throw new Error("Erreur générétion contrat");
         }
+      }
+
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("pdf")) {
+        const raw = await res.text();
+        const trimmed = (raw || "").trim();
+        throw new Error(
+          `Le serveur n'a pas renvoyé un PDF.\nContent-Type: ${contentType}\nExtrait: ${trimmed.slice(0, 200)}`
+        );
       }
 
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Contrat_${(prestataire.nom || "Prestataire")}_${(employer.denomination || "Employeur")}.odt`;
+      a.download = `Contrat_${(prestataire.nom || "Prestataire")}_${(employer.denomination || "Employeur")}.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-
-      generatePreview();
     } catch (err) {
-      console.error("Erreur génération:", err);
-      setApiWarning(err?.message || "Erreur lors de la génération du contrat");
-      alert("❌ Erreur lors de la génération du contrat");
+      setExtractStatus("prestataire_error");
+      setExtractStatus("employer_error");
+      console.error("Erreur générétion:", err);
+      setApiWarning(err?.message || "Erreur lors de la générétion du contrat");
+      alert("❌ Erreur lors de la générétion du contrat");
     } finally {
       setGeneratingContract(false);
     }
   };
 
-  const generatePreview = () => {
-    const preview = `
-      <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
-        <h2 style="text-align: center;">CONTRAT DE PRESTATION DE SERVICES</h2>
+  const getPoint = (e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches && e.touches[0];
+    const clientX = touch ?touch.clientX : e.clientX;
+    const clientY = touch ?touch.clientY : e.clientY;
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  };
 
-        <h3>Entre les soussignés :</h3>
+  const startDraw = (e) => {
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    isDrawingRef.current = true;
+    lastPointRef.current = getPoint(e);
+  };
 
-        <div style="margin: 20px 0;">
-          <h4>L'EMPLOYEUR :</h4>
-          <p><strong>Dénomination :</strong> ${employer.denomination || ""}</p>
-          <p><strong>SIREN :</strong> ${employer.siren || ""}</p>
-          <p><strong>Adresse :</strong> ${employer.adresse || ""}</p>
-          <p><strong>Représenté par :</strong> ${employer.representant || ""}, ${employer.fonction_representant || ""}</p>
-        </div>
+  const draw = (e) => {
+    if (!isDrawingRef.current) return;
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const p = getPoint(e);
+    ctx.beginPath();
+    ctx.moveTo(lastPointRef.current.x, lastPointRef.current.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    lastPointRef.current = p;
+  };
 
-        <div style="margin: 20px 0;">
-          <h4>LE PRESTATAIRE :</h4>
-          <p><strong>Nom :</strong> ${(prestataire.nom || "") + " " + (prestataire.prenom || "")}</p>
-          <p><strong>SIREN :</strong> ${prestataire.siren || ""}</p>
-          <p><strong>Adresse :</strong> ${prestataire.adresse || ""}</p>
-        </div>
+  const endDraw = () => {
+    if (!isDrawingRef.current) return;
+    isDrawingRef.current = false;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    setSignatureDataUrl(canvas.toDataURL("image/png"));
+    setSignatureConfirmed(false);
+  };
 
-        <div style="margin: 20px 0;">
-          <h4>Modalités :</h4>
-          <p><strong>Taux journalier :</strong> ${variables.taux_journalier || ""} €</p>
-          <p><strong>Période :</strong> ${variables.date_debut || ""} au ${variables.date_fin || ""}</p>
-        </div>
+  const clearSignature = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const ratio = window.devicePixelRatio || 1;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, 520, 160);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#0f172a";
+    setSignatureDataUrl("");
+  };
 
-        <div style="margin-top: 40px;">
-          <p>Fait à ${variables.lieu_signature || ""}, le ${variables.date_signature || ""}</p>
-        </div>
-      </div>
-    `;
-    setContractPreview(preview);
+  const formatDateFr = (value) => {
+    if (!value) return "";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return value;
+    return d.toLocaleDateString("fr-FR");
   };
 
   const handleFinalSubmit = () => {
     onFinalSubmit?.({
       ...formData,
-      contrat: { employer, prestataire, variables },
+      contrat: { employer, prestataire, variables: { ...variables, signature_data_url: signatureDataUrl, signature_confirmed: signatureConfirmed } },
     });
   };
 
@@ -292,10 +356,27 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
           Génération du contrat
         </h2>
         <p style={{ color: "#6b7280", fontSize: "16px" }}>
-          Vérifiez et complétez les informations pour générer votre contrat de prestation
+          Vérifiez et complètez les informations pour générér votre contrat de prestation
         </p>
 
-        {apiWarning && (
+        {extractStatus !== "idle" && (
+          <div
+            style={{
+              marginTop: "12px",
+              backgroundColor: "#eef2ff",
+              padding: "10px 14px",
+              borderRadius: "10px",
+              fontSize: "13px",
+              color: "#1e3a8a",
+              fontWeight: "600",
+              borderLeft: "4px solid #3b82f6",
+              whiteSpace: "pre-line",
+            }}
+          >
+            Statut extraction : {extractStatus}
+          </div>
+        )}
+                {apiWarning && (
           <div
             style={{
               marginTop: "16px",
@@ -313,13 +394,26 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
           </div>
         )}
       </div>
-
       {/* Section Employeur */}
       <div style={{ marginBottom: "40px" }}>
         <h3 style={{ fontSize: "20px", fontWeight: "700", color: "#111", marginBottom: "20px" }}>
-          L'EMPLOYEUR{" "}
-          {loadingEmployer && <span style={{ fontSize: "14px", color: "#3b82f6" }}>🔄 Chargement...</span>}
+          L'EMPLOYEUR {loadingEmployer && <span style={{ fontSize: "14px", color: "#3b82f6" }}>?Chargement...</span>}
         </h3>
+
+        <div style={{ marginBottom: "18px" }}>
+          <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
+            Choix de l'employeur
+          </label>
+          <select
+            value={employerChoice}
+            onChange={(e) => setEmployerChoice(e.target.value)}
+            style={{ ...inputStyle, maxWidth: "320px" }}
+          >
+            <option value="caplogy">Caplogy</option>
+            <option value="novatiel">Novatiel</option>
+            <option value="doctrina">Doctrina</option>
+          </select>
+        </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
           <div>
@@ -343,6 +437,19 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
               type="text"
               value={employer.siren}
               onChange={(e) => setEmployer({ ...employer, siren: e.target.value })}
+              style={inputStyle}
+              required
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
+              SIRET *
+            </label>
+            <input
+              type="text"
+              value={employer.siret}
+              onChange={(e) => setEmployer({ ...employer, siret: e.target.value })}
               style={inputStyle}
               required
             />
@@ -399,36 +506,24 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
           <div>
             <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
-              SIREN
-            </label>
-            <input
-              type="text"
-              value={prestataire.siren}
-              onChange={(e) => setPrestataire({ ...prestataire, siren: e.target.value })}
-              style={inputStyle}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
-              SIRET
-            </label>
-            <input
-              type="text"
-              value={prestataire.siret}
-              onChange={(e) => setPrestataire({ ...prestataire, siret: e.target.value })}
-              style={inputStyle}
-            />
-          </div>
-
-          <div style={{ gridColumn: "1 / -1" }}>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
               Dénomination (si société)
             </label>
             <input
               type="text"
               value={prestataire.denomination}
               onChange={(e) => setPrestataire({ ...prestataire, denomination: e.target.value })}
+              style={inputStyle}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
+              SIREN
+            </label>
+            <input
+              type="text"
+              value={prestataire.siren}
+              onChange={(e) => setPrestataire({ ...prestataire, siren: e.target.value })}
               style={inputStyle}
             />
           </div>
@@ -445,64 +540,28 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
               required
             />
           </div>
+
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
+              Représentant
+            </label>
+            <input
+              type="text"
+              value={prestataire.representant}
+              onChange={(e) => setPrestataire({ ...prestataire, representant: e.target.value })}
+              style={inputStyle}
+            />
+          </div>
         </div>
       </div>
 
       {/* Variables */}
       <div style={{ marginBottom: "40px" }}>
         <h3 style={{ fontSize: "20px", fontWeight: "700", color: "#111", marginBottom: "20px" }}>
-          MODALITÉS DE LA PRESTATION
+          SIGNATURE ET LIEU
         </h3>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
-          <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
-              Taux journalier (€)
-            </label>
-            <input
-              type="number"
-              value={variables.taux_journalier}
-              onChange={(e) => setVariables({ ...variables, taux_journalier: e.target.value })}
-              style={inputStyle}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
-              Durée mission (jours)
-            </label>
-            <input
-              type="text"
-              value={variables.duree_mission}
-              onChange={(e) => setVariables({ ...variables, duree_mission: e.target.value })}
-              style={inputStyle}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
-              Date début
-            </label>
-            <input
-              type="date"
-              value={variables.date_debut}
-              onChange={(e) => setVariables({ ...variables, date_debut: e.target.value })}
-              style={inputStyle}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
-              Date fin
-            </label>
-            <input
-              type="date"
-              value={variables.date_fin}
-              onChange={(e) => setVariables({ ...variables, date_fin: e.target.value })}
-              style={inputStyle}
-            />
-          </div>
-
           <div>
             <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
               Lieu signature
@@ -529,20 +588,141 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
         </div>
       </div>
 
+      {/* Signature */}
+      <div style={{ marginBottom: "40px" }}>
+        <h3 style={{ fontSize: "20px", fontWeight: "700", color: "#111", marginBottom: "20px" }}>
+          SIGNATURE DU PRESTATAIRE
+        </h3>
+        <div style={{ display: "flex", gap: "20px", alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ border: "2px dashed #e5e7eb", borderRadius: "14px", padding: "10px", background: "#ffffff" }}>
+            <canvas
+              ref={canvasRef}
+              onMouseDown={startDraw}
+              onMouseMove={draw}
+              onMouseUp={endDraw}
+              onMouseLeave={endDraw}
+              onTouchStart={startDraw}
+              onTouchMove={draw}
+              onTouchEnd={endDraw}
+              style={{ display: "block", borderRadius: "10px" }}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            <button
+              type="button"
+              onClick={() => setSignatureConfirmed(true)}
+              disabled={!signatureDataUrl}
+              style={{
+                padding: "10px 14px",
+                borderRadius: "10px",
+                border: "none",
+                background: signatureConfirmed ?"#10b981" : "#3b82f6",
+                color: "#fff",
+                fontWeight: "800",
+                cursor: !signatureDataUrl ?"not-allowed" : "pointer",
+                opacity: !signatureDataUrl ?0.6 : 1,
+              }}
+            >
+              {signatureConfirmed ?"Signature valid?e ✓" : "Valider la signature"}
+            </button>
+            <button
+              type="button"
+              onClick={clearSignature}
+              style={{
+                padding: "10px 14px",
+                borderRadius: "10px",
+                border: "2px solid #e5e7eb",
+                background: "#fff",
+                fontWeight: "700",
+                cursor: "pointer",
+              }}
+            >
+              Effacer la signature
+            </button>
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>
+              Signe dans la zone, la signature sera int?gr?e au PDF.
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Preview */}
-      {contractPreview && (
+      <div
+        style={{
+          marginBottom: "40px",
+          padding: "28px",
+          backgroundColor: "#ffffff",
+          borderRadius: "20px",
+          border: "1px solid #e5e7eb",
+          boxShadow: "0 18px 45px rgba(15, 23, 42, 0.08)",
+        }}
+      >
         <div
           style={{
-            marginBottom: "40px",
-            padding: "30px",
-            backgroundColor: "#f9fafb",
-            borderRadius: "12px",
-            border: "2px solid #e5e7eb",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "16px",
+            padding: "16px 18px",
+            borderRadius: "14px",
+            background: "#f8fafc",
+            border: "1px solid #e5e7eb",
+            marginBottom: "22px",
           }}
-          dangerouslySetInnerHTML={{ __html: contractPreview }}
-        />
-      )}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <img src="/Logo_caplogy_contrat.png" alt="Caplogy" style={{ height: "38px", width: "auto" }} />
+            <div>
+              <div style={{ fontSize: "18px", fontWeight: "800", color: "#0f172a", letterSpacing: "0.3px" }}>
+                CONTRAT DE PRESTATION DE SERVICES
+              </div>
+              <div style={{ fontSize: "12px", color: "#475569", marginTop: "6px" }}>
+                Aperçu non contractuel - le PDF sera généréavec les informations ci-dessous
+              </div>
+            </div>
+          </div>
+          <div
+            style={{
+              padding: "8px 12px",
+              borderRadius: "999px",
+              fontSize: "11px",
+              fontWeight: "700",
+              letterSpacing: "0.4px",
+              color: "#ffffff",
+              background: "linear-gradient(90deg, #3b82f6 0%, #2563eb 100%)",
+            }}
+          >
+            VERSION PREVIEW
+          </div>
+        </div>
 
+        <div style={{ marginBottom: "20px" }}>
+          <div style={{ fontWeight: "700", color: "#0f172a", marginBottom: "8px" }}>Entre les soussignés :</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+            <div style={{ background: "#f8fafc", border: "1px solid #e5e7eb", borderRadius: "14px", padding: "16px" }}>
+              <div style={{ fontWeight: "800", marginBottom: "10px", color: "#0f172a" }}>L'Employeur</div>
+              <div style={{ color: "#111827" }}><strong>Dénomination :</strong> {employer.denomination || "-"}</div>
+              <div style={{ color: "#111827" }}><strong>SIREN :</strong> {employer.siren || "-"}</div>
+              <div style={{ color: "#111827" }}><strong>SIRET :</strong> {employer.siret || "-"}</div>
+              <div style={{ color: "#111827" }}><strong>Adresse :</strong> {employer.adresse || "-"}</div>
+              <div style={{ color: "#111827" }}><strong>Représentant :</strong> {employer.representant || "-"}</div>
+              <div style={{ color: "#111827" }}><strong>Fonction :</strong> {employer.fonction_representant || "-"}</div>
+            </div>
+
+            <div style={{ background: "#f8fafc", border: "1px solid #e5e7eb", borderRadius: "14px", padding: "16px" }}>
+              <div style={{ fontWeight: "800", marginBottom: "10px", color: "#0f172a" }}>Le Prestataire</div>
+              <div style={{ color: "#111827" }}><strong>Dénomination :</strong> {prestataire.denomination || "-"}</div>
+              <div style={{ color: "#111827" }}><strong>SIREN :</strong> {prestataire.siren || "-"}</div>
+              <div style={{ color: "#111827" }}><strong>Adresse :</strong> {prestataire.adresse || "-"}</div>
+              <div style={{ color: "#111827" }}><strong>Représentant :</strong> {prestataire.representant || "-"}</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ fontSize: "13px", color: "#475569" }}>
+          Fait à{variables.lieu_signature || "-"}, le {formatDateFr(variables.date_signature) || "-"}
+        </div>
+      </div>
       {/* Buttons */}
       <div style={{ display: "flex", gap: "16px", marginTop: "40px" }}>
         <button
@@ -575,27 +755,27 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
         <button
           type="button"
           onClick={handleGenerateContract}
-          disabled={generatingContract}
+          disabled={générétingContract}
           style={{
             flex: 2,
             padding: "16px",
             borderRadius: "12px",
             border: "none",
-            backgroundColor: generatingContract ? "#9ca3af" : "#3b82f6",
+            backgroundColor: générétingContract ?"#9ca3af" : "#3b82f6",
             color: "#fff",
             fontWeight: "700",
             fontSize: "16px",
-            cursor: generatingContract ? "not-allowed" : "pointer",
+            cursor: générétingContract ?"not-allowed" : "pointer",
             transition: "all 0.2s",
           }}
           onMouseEnter={(e) => {
-            if (!generatingContract) e.currentTarget.style.backgroundColor = "#2563eb";
+            if (!générétingContract) e.currentTarget.style.backgroundColor = "#2563eb";
           }}
           onMouseLeave={(e) => {
-            if (!generatingContract) e.currentTarget.style.backgroundColor = "#3b82f6";
+            if (!générétingContract) e.currentTarget.style.backgroundColor = "#3b82f6";
           }}
         >
-          {generatingContract ? "⏳ Génération..." : "📄 Générer & Télécharger le Contrat"}
+          {générétingContract ?"⏳ Génération..." : "📄 Générer & Télécharger le Contrat"}
         </button>
 
         <button
@@ -630,3 +810,4 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
     </div>
   );
 }
+
