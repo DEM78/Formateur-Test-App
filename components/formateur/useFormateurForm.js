@@ -13,7 +13,7 @@ export function useFormateurForm({ onSubmitForm }) {
     cv: null,
     identite: null,
     diplomes: null,
-    rib: "",
+    rib: null,
     casier: null,
     assurance: null,
     fiscale: null,
@@ -33,6 +33,7 @@ export function useFormateurForm({ onSubmitForm }) {
 
   const [verifyingDocs, setVerifyingDocs] = useState({
     diplomes: false,
+    rib: false,
     casier: false,
     assurance: false,
     fiscale: false,
@@ -43,6 +44,7 @@ export function useFormateurForm({ onSubmitForm }) {
 
   const [docStatus, setDocStatus] = useState({
     diplomes: null,
+    rib: null,
     casier: null,
     assurance: null,
     fiscale: null,
@@ -53,6 +55,7 @@ export function useFormateurForm({ onSubmitForm }) {
 
   const [docMessage, setDocMessage] = useState({
     diplomes: "",
+    rib: "",
     casier: "",
     assurance: "",
     fiscale: "",
@@ -90,6 +93,7 @@ export function useFormateurForm({ onSubmitForm }) {
           cv: null,
           identite: null,
           diplomes: null,
+          rib: null,
           casier: null,
           assurance: null,
           fiscale: null,
@@ -108,10 +112,37 @@ export function useFormateurForm({ onSubmitForm }) {
 
   const loadDraft = () => {
     try {
+      const forcedStep = localStorage.getItem("caplogy_force_step");
       const saved = localStorage.getItem("caplogy_formateur_draft");
+      if (forcedStep && !saved) {
+        const fs = parseInt(forcedStep, 10);
+        if (!Number.isNaN(fs)) setStep(fs);
+        localStorage.removeItem("caplogy_force_step");
+        return;
+      }
       if (saved) {
         const draft = JSON.parse(saved);
-        if (draft.step) setStep(draft.step);
+        const draftForm = draft.formData || {};
+
+        // Emp?che de sauter des ?tapes si les donn?es cl?s manquent
+        let nextStep = draft.step || 1;
+        const hasCv = !!draftForm.cv;
+        const hasInfos =
+          !!draftForm.nom &&
+          !!draftForm.prenom &&
+          !!draftForm.email &&
+          !!draftForm.telephone &&
+          !!draftForm.adresse;
+
+        if (!hasCv) nextStep = 1;
+        else if (!hasInfos) nextStep = 2;
+        if (forcedStep) {
+          const fs = parseInt(forcedStep, 10);
+          if (!Number.isNaN(fs)) nextStep = fs;
+          localStorage.removeItem("caplogy_force_step");
+        }
+
+        setStep(nextStep);
         if (draft.formData) setFormData((prev) => ({ ...prev, ...draft.formData }));
         if (draft.docStatus) setDocStatus(draft.docStatus);
         if (draft.docMessage) setDocMessage(draft.docMessage);
@@ -157,12 +188,12 @@ export function useFormateurForm({ onSubmitForm }) {
     return data.texteCV || "";
   };
 
-  const ocrPdfToText = async (file) => {
+  const ocrPdfToText = async (file, maxPages = 1) => {
     const base64 = await fileToBase64(file);
     const res = await fetch("/api/ocr-pdf", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fileBase64: base64, maxPages: 1 }),
+      body: JSON.stringify({ fileBase64: base64, maxPages }),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -328,18 +359,18 @@ export function useFormateurForm({ onSubmitForm }) {
         }
 
         if (!text || text.trim().length < 30) {
-          if (docName === "diplomes") {
-            const ocrText = await ocrPdfToText(file);
+          if (docName === "diplomes" || docName === "recpActivite") {
+            const ocrText = await ocrPdfToText(file, 2);
             if (!ocrText || ocrText.length < 30) {
               setStatus(docName, "REVIEW");
-              setMessage(docName, "⚠️ OCR impossible / scan trop flou. Envoie une image nette JPG/PNG.");
+              setMessage(docName, "?? OCR impossible / scan trop flou. Envoie une image nette JPG/PNG.");
               return;
             }
             payload.contentType = "pdf_text";
             payload.text = ocrText;
           } else {
             setStatus(docName, "REVIEW");
-            setMessage(docName, "⚠️ PDF scanné détecté (pas de texte). Envoie une image JPG/PNG si tu veux un ✅ automatique.");
+            setMessage(docName, "?? PDF scann? d?tect? (pas de texte). Envoie une image JPG/PNG si tu veux un ? automatique.");
             return;
           }
         } else {
@@ -362,7 +393,7 @@ export function useFormateurForm({ onSubmitForm }) {
       const status = data.status || (data.valide === true ? "OK" : "REVIEW");
       setStatus(docName, status);
 
-      if (status === "OK") setMessage(docName, "✅ Document cohérent");
+      if (status === "OK") setMessage(docName, "✅ Document validé");
       else if (status === "FAIL") setMessage(docName, "❌ Document incohérent");
       else {
         const reason = data.reason ? ` (${data.reason})` : "";
@@ -410,7 +441,7 @@ export function useFormateurForm({ onSubmitForm }) {
     const missing = [];
     if (!formData.identite) missing.push("Pièce d'identité");
     if (!formData.diplomes) missing.push("Diplômes et certifications");
-    if (!formData.rib || !String(formData.rib).trim()) missing.push("RIB (IBAN)");
+    if (!formData.rib) missing.push("RIB (document)");
     if (!formData.casier) missing.push("Casier judiciaire");
     if (!formData.assurance) missing.push("Assurance RC Professionnelle");
     if (!formData.fiscale) missing.push("Attestation fiscale");

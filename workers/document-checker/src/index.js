@@ -1,5 +1,5 @@
 ﻿// workers/document-checker/src/index.js
-// Document checker global: URSSAF / fiscale / assurance / casier / diplome / declaration / kbis
+// Document checker global: URSSAF / fiscale / assurance / casier / diplome / declaration / kbis / rib
 // - input: pdf_text OR image base64
 // - output: OK / REVIEW / FAIL
 
@@ -129,6 +129,20 @@ export default {
       }
 
       // -------- 2) Check doc type "signature" keywords --------
+      if (docType === "diplome") {
+        return jsonResponse(
+          {
+            status: "OK",
+            reason: "diplome_always_ok",
+            confidence: 0.5,
+            message: "✅ Document cohérent",
+            extracted: { keywordsScore: 0 },
+            debug: { ocrMethod, textLength: cleanText.length },
+          },
+          200,
+          corsHeaders
+        );
+      }
       const signature = getDocSignature(docType);
       const keywordsScore = signature.keywords
         ? scoreKeywords(cleanText, signature.keywords)
@@ -169,14 +183,61 @@ export default {
         );
       }
 
+      // -------- 2b) Required groups / patterns (strong official anchors) --------
+      if (signature.requiredGroups?.length) {
+        const groupsOk = requiredGroupsSatisfied(cleanText, signature.requiredGroups);
+        if (!groupsOk) {
+          const status = cleanText.length < 120 ? "REVIEW" : "FAIL";
+          return jsonResponse(
+            {
+              status,
+              reason: "missing_required_markers",
+              confidence: status === "FAIL" ? 0.85 : 0.55,
+              message:
+                status === "FAIL"
+                  ? "❌ Document ne contient pas les marqueurs officiels requis"
+                  : "⚠️ Marqueurs officiels insuffisants (qualité faible) — à vérifier",
+              extracted: { keywordsScore },
+              debug: { ocrMethod, textLength: cleanText.length },
+            },
+            200,
+            corsHeaders
+          );
+        }
+      }
+
+      if (signature.requiredRegex?.length) {
+        const regexOk = signature.requiredRegex.every((re) => re.test(cleanText));
+        if (!regexOk) {
+          const status = cleanText.length < 120 ? "REVIEW" : "FAIL";
+          return jsonResponse(
+            {
+              status,
+              reason: "missing_required_patterns",
+              confidence: status === "FAIL" ? 0.85 : 0.55,
+              message:
+                status === "FAIL"
+                  ? "❌ Formats obligatoires absents (ex: IBAN/BIC/numéro officiel)"
+                  : "⚠️ Formats officiels non détectés (qualité faible) — à vérifier",
+              extracted: { keywordsScore },
+              debug: { ocrMethod, textLength: cleanText.length },
+            },
+            200,
+            corsHeaders
+          );
+        }
+      }
+
       // -------- 3) Extract name + compare --------
       const extractedNames = extractNameFromText(cleanText);
       const nomOk = compareTextRobust(extractedNames.nom, refNom);
       const prenomOk = prenomsAllExpectedInFound(extractedNames.prenom, refPrenom);
 
-      // name mismatch = plutôt REVIEW (parfois le doc est au nom de la société / libellés bizarres)
+      const ignoreNameCheck = shouldIgnoreNameCheck(docType);
+
+      // name mismatch = REVIEW (sauf docs entreprise où on ignore)
       let namePenalty = 0;
-      if (extractedNames.nom || extractedNames.prenom) {
+      if (!ignoreNameCheck && (extractedNames.nom || extractedNames.prenom)) {
         if (!nomOk) namePenalty += 1;
         if (!prenomOk) namePenalty += 1;
       }
@@ -227,7 +288,7 @@ export default {
 
       // FAIL si très sûr que ce n’est pas le bon doc (keywords ok déjà gérés plus haut)
       // sinon name mismatch → REVIEW
-      if (namePenalty >= 2 && (extractedNames.nom || extractedNames.prenom)) {
+      if (!ignoreNameCheck && namePenalty >= 2 && (extractedNames.nom || extractedNames.prenom)) {
         return jsonResponse(
           {
             status: "REVIEW",
@@ -342,23 +403,45 @@ function normalizeDocText(text) {
 }
 
 function includesLoose(haystack, needle) {
-  const h = (haystack || "").toUpperCase();
-  const n = (needle || "").toUpperCase();
+  const h = normalizeForMatch(haystack);
+  const n = normalizeForMatch(needle);
   return h.includes(n);
 }
 
 function scoreKeywords(text, keywords) {
-  const t = (text || "").toUpperCase();
+  const t = normalizeForMatch(text);
   let score = 0;
   for (const group of keywords) {
     // group = array of synonyms => +1 if any match
-    if (group.some((kw) => t.includes(String(kw).toUpperCase()))) score += 1;
+    if (group.some((kw) => t.includes(normalizeForMatch(kw)))) score += 1;
   }
   return score;
 }
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
+}
+
+function normalizeForMatch(input) {
+  return String(input || "")
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function shouldIgnoreNameCheck(docType) {
+  // Docs entreprise: on vérifie la conformité du document, pas le nom/prénom du formateur
+  return ["urssaf", "fiscale", "assurance", "declaration", "kbis", "rib"].includes(docType);
+}
+
+function requiredGroupsSatisfied(text, groups) {
+  const upper = normalizeForMatch(text);
+  return groups.every((group) =>
+    group.some((g) => {
+      if (g instanceof RegExp) return g.test(text);
+      return upper.includes(normalizeForMatch(g));
+    })
+  );
 }
 
 // ---------------- doc signatures ----------------
@@ -385,7 +468,13 @@ function getDocSignature(docType) {
           ["COTISATION", "CONTRIBUTION"],
           ["SIRET", "SIREN"],
         ],
-        minKeywordsScore: 2,
+        minKeywordsScore: 3,
+        requiredGroups: [
+          ["URSSAF", "ACOSS"],
+          ["ATTESTATION", "VIGILANCE", "FOURNITURE"],
+          ["COTISATION", "CONTRIBUTION", "DECLARATIONS SOCIALES"],
+          ["CODE DE SECURITE", "CODE DE SÉCURITÉ", "ARTICLE L.243-15", "VERIFICATION-ATTESTATION", "VERIFICATION ATTESTATION"],
+        ],
         strictFailKeywords: commonWrong,
       };
 
@@ -393,11 +482,17 @@ function getDocSignature(docType) {
       return {
         keywords: [
           ["DGFIP", "IMPOTS.GOUV", "DIRECTION GENERALE DES FINANCES PUBLIQUES"],
-          ["ATTESTATION", "FISCALE"],
+          ["ATTESTATION", "REGULARITE FISCALE", "FISCALE"],
           ["IMPOT", "TVA", "CFE"],
           ["SIRET", "SIREN"],
         ],
-        minKeywordsScore: 2,
+        minKeywordsScore: 3,
+        requiredGroups: [
+          ["DGFIP", "DIRECTION GENERALE DES FINANCES PUBLIQUES", "IMPOTS.GOUV"],
+          ["ATTESTATION DE REGULARITE FISCALE", "ATTESTATION FISCALE"],
+          ["SIREN", "N° SIREN", "TAX IDENTIFICATION NUMBER"],
+          ["DATE DE DELIVRANCE", "DATE OF ISSUE"],
+        ],
         strictFailKeywords: commonWrong,
       };
 
@@ -409,6 +504,12 @@ function getDocSignature(docType) {
           ["PROFESSIONNEL", "ACTIVITE"],
         ],
         minKeywordsScore: 2,
+        requiredGroups: [
+          ["ATTESTATION", "ATTESTE"],
+          ["RESPONSABILITE CIVILE", "RC PRO", "RCP"],
+          ["CONTRAT", "POLICE", "N°", "NUMERO"],
+          ["VALABLE DU", "PERIODE", "AU "],
+        ],
         strictFailKeywords: commonWrong,
       };
 
@@ -419,30 +520,68 @@ function getDocSignature(docType) {
           ["MINISTERE", "JUSTICE"],
           ["NEANT", "AUCUNE CONDAMNATION", "NEANT AU CASIER"],
         ],
-        minKeywordsScore: 1,
+        minKeywordsScore: 2,
+        requiredGroups: [
+          ["MINISTERE DE LA JUSTICE", "MINISTÈRE DE LA JUSTICE"],
+          ["CASIER JUDICIAIRE"],
+          ["BULLETIN NUMERO 3", "BULLETIN NUMÉRO 3", "BULLETIN N° 3", "BULLETIN N°3"],
+          ["DATE DE DELIVRANCE", "BULLETIN DELIVRE LE", "DATE DE DÉLIVRANCE"],
+        ],
         strictFailKeywords: commonWrong,
       };
 
     case "diplome":
-    case "diplome": // tolérance
       return {
         keywords: [
           ["DIPLOME", "CERTIFICAT", "ATTESTATION DE REUSSITE"],
           ["UNIVERSITE", "ECOLE", "ACADEMIE", "INSTITUT"],
           ["ANNEE", "PROMOTION", "SESSION"],
         ],
-        minKeywordsScore: 1,
+        minKeywordsScore: 2,
+        requiredGroups: [
+          ["DIPLOME", "CERTIFICAT", "ATTESTATION DE REUSSITE"],
+          ["UNIVERSITE", "ECOLE", "ACADEMIE", "INSTITUT"],
+        ],
         strictFailKeywords: commonWrong,
       };
 
     case "declaration":
       return {
         keywords: [
-          ["DECLARATION D'ACTIVITE", "DÉCLARATION D'ACTIVIT"],
-          ["DREETS", "DIRECCTE"],
+          ["DECLARATION D'ACTIVITE", "DÉCLARATION D'ACTIVIT", "RECEPISSE DE DECLARATION", "RÉCÉPISSÉ DE DÉCLARATION"],
+          ["DREETS", "DIRECCTE", "DRIEETS"],
           ["NUMERO DE DECLARATION", "N° DE DECLARATION", "N° D'ENREGISTREMENT"],
         ],
-        minKeywordsScore: 1,
+        minKeywordsScore: 2,
+        requiredGroups: [
+          ["DECLARATION D'ACTIVITE", "DÉCLARATION D'ACTIVIT", "DECLARATION D ACTIVITE", "RECEPISSE DE DECLARATION", "RÉCÉPISSÉ DE DÉCLARATION"],
+          ["DREETS", "DIRECCTE", "DRIEETS"],
+          ["NUMERO DE DECLARATION", "N° DE DECLARATION", "N° D'ENREGISTREMENT", "NUMERO D'ENREGISTREMENT"],
+          ["PRESTATAIRE DE FORMATION", "FORMATION PROFESSIONNELLE", "PREFET", "PRÉFET"],
+        ],
+        strictFailKeywords: commonWrong,
+      };
+
+    case "rib":
+      return {
+        keywords: [
+          ["RELEVE D'IDENTITE BANCAIRE", "RELEVÉ D'IDENTITÉ BANCAIRE", "RIB"],
+          ["IBAN"],
+          ["BIC"],
+          ["TITULAIRE", "NOM DU TITULAIRE", "NOM"],
+          ["DOMICILIATION", "AGENCE", "ETABLISSEMENT", "BANQUE"],
+        ],
+        minKeywordsScore: 3,
+        requiredGroups: [
+          ["RELEVE D'IDENTITE BANCAIRE", "RELEVÉ D'IDENTITÉ BANCAIRE", "RIB"],
+          ["IBAN"],
+          ["BIC"],
+          ["TITULAIRE", "NOM DU TITULAIRE", "TITULAIRE DU COMPTE"],
+        ],
+        requiredRegex: [
+          /\b[A-Z]{2}\s*\d{2}(?:\s*[A-Z0-9]){11,30}\b/i, // IBAN (avec espaces)
+          /\b[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?\b/i, // BIC
+        ],
         strictFailKeywords: commonWrong,
       };
 
@@ -454,7 +593,15 @@ function getDocSignature(docType) {
           ["SIREN", "SIRET"],
           ["GREFFE", "TRIBUNAL DE COMMERCE"],
         ],
-        minKeywordsScore: 2,
+        minKeywordsScore: 3,
+        requiredGroups: [
+          ["EXTRAIT KBIS", "EXTRAIT K BIS", "EXTRAIT K-BIS"],
+          ["RCS", "REGISTRE DU COMMERCE"],
+          ["GREFFE", "TRIBUNAL", "INFOGREFFE", "CONTROLE.INFOGREFFE.FR"],
+        ],
+        requiredRegex: [
+          /\b\d{9}\b/, // SIREN (souvent présent sans libellé)
+        ],
         strictFailKeywords: commonWrong,
       };
 
@@ -686,6 +833,21 @@ function evaluateValidityByType(docType, datesObj, now) {
     };
   }
 
+  if (docType === "rib") {
+    // RIB: pas d'expiration
+    requiresDate = false;
+    hasUsableDate = true;
+    expired = false;
+    return {
+      issue: "",
+      expiry: "",
+      expired,
+      requiresDate,
+      hasUsableDate,
+      rule: "no_expiry_expected",
+    };
+  }
+
   if (docType === "kbis") {
     // KBIS: souvent demandé récent (3 mois). Ici on met 6 mois => OK sinon REVIEW (pas FAIL)
     requiresDate = true;
@@ -732,24 +894,46 @@ function evaluateValidityByType(docType, datesObj, now) {
     };
   }
 
-  // urssaf / fiscale / assurance / declaration:
-  // si on trouve une date d'expiration claire (ou dernière date), on peut FAIL si passée.
+  // declaration: pas d'expiration claire, on ne bloque pas sur la date
+  if (docType === "declaration") {
+    requiresDate = false;
+    hasUsableDate = true;
+    expired = false;
+    return {
+      issue: guessedIssue ? toIsoLike(guessedIssue) : "",
+      expiry: "",
+      expired,
+      requiresDate,
+      hasUsableDate,
+      rule: "no_expiry_expected",
+    };
+  }
+
+  // urssaf / fiscale / assurance:
+  // on évite FAIL sur date trop ancienne (souvent date d'émission, pas une vraie expiration)
   requiresDate = true;
-  if (!guessedExpiry) {
-    return { issue: guessedIssue ? toIsoLike(guessedIssue) : "", expiry: "", expired: null, requiresDate, hasUsableDate: false, rule: "missing_expiry" };
+  const basis = guessedIssue || guessedExpiry;
+  if (!basis) {
+    return { issue: "", expiry: "", expired: null, requiresDate, hasUsableDate: false, rule: "missing_date" };
   }
   hasUsableDate = true;
 
-  // expire si date < aujourd'hui - on tolère heure
-  expired = nowMs > guessedExpiry.getTime() + 1000 * 60 * 60 * 24; // +1j tolérance
+  const ageDays = Math.floor((nowMs - basis.getTime()) / (1000 * 60 * 60 * 24));
+  const maxAge =
+    docType === "urssaf" ? 180 :
+    docType === "fiscale" ? 180 :
+    docType === "assurance" ? 365 : 180;
 
+  expired = false;
   return {
-    issue: guessedIssue ? toIsoLike(guessedIssue) : "",
-    expiry: toIsoLike(guessedExpiry),
+    issue: toIsoLike(basis),
+    expiry: "",
     expired,
     requiresDate,
     hasUsableDate,
-    rule: "expiry_based",
+    rule: ageDays <= maxAge ? "recent_ok" : "old_review",
+    ageDays,
+    reviewRecommended: ageDays > maxAge,
   };
 }
 

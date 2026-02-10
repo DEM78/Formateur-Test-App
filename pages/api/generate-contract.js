@@ -76,8 +76,8 @@ async function generateContractPdf(data) {
   const fontHeading = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontUI = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-  const margin = 42;
-  const lineHeight = 14;
+  const margin = 46;
+  const lineHeight = 16;
 
   const c = {
     ink: rgb(0.07, 0.08, 0.1),
@@ -89,9 +89,20 @@ async function generateContractPdf(data) {
   let { width, height } = page.getSize();
   let cursorY = height - margin;
 
-  const wrapText = (text, usedFont, size, maxW) => {
-    const words = String(text || "").split(/\s+/).filter(Boolean);
+  const sanitizePdfText = (input) => {
+    return String(input || "")
+      .replace(/\?/g, "")
+      .replace(/[•●]/g, "-")
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/[–—]/g, "-");
+  };
+
+const wrapText = (text, usedFont, size, maxW) => {
+    const safeText = sanitizePdfText(text);
+    const words = String(safeText || "").split(/\s+/).filter(Boolean);
     const lines = [];
+
     let line = "";
     for (const word of words) {
       const testLine = line ? `${line} ${word}` : word;
@@ -104,6 +115,18 @@ async function generateContractPdf(data) {
     }
     if (line) lines.push(line);
     return lines.length ? lines : [""];
+  };
+
+  const fixMojibake = (s) => {
+    const str = String(s || "");
+    if (/[ÂÃâ]/.test(str)) {
+      try {
+        return Buffer.from(str, "latin1").toString("utf8");
+      } catch {
+        return str;
+      }
+    }
+    return str;
   };
 
   const newPage = () => {
@@ -134,9 +157,9 @@ async function generateContractPdf(data) {
       page.drawText(line, { x, y: cursorY, size, font: fontHeading, color: c.ink });
       cursorY -= lineHeight + 2;
     }
-    cursorY -= 6;
+    cursorY -= 8;
     page.drawRectangle({ x: margin, y: cursorY, width: width - margin * 2, height: 1, color: c.line });
-    cursorY -= 14;
+    cursorY -= 16;
   };
 
   const drawSectionTitle = (text) => {
@@ -144,12 +167,41 @@ async function generateContractPdf(data) {
     page.drawText(text.toUpperCase(), { x: margin, y: cursorY, size: 11, font: fontHeading, color: c.ink });
     page.drawRectangle({ x: margin, y: cursorY - 4, width: width - margin * 2, height: 1, color: c.line });
     cursorY -= 16;
+  };  const drawInfoBlock = (title, items) => {
+    ensureSpace(96);
+    const boxW = (width - margin * 2 - 16) / 2;
+    const boxH = 92;
+    const x = title === "L'EMPLOYEUR" ? margin : margin + boxW + 16;
+    const y = cursorY - boxH;
+    page.drawRectangle({
+      x,
+      y,
+      width: boxW,
+      height: boxH,
+      borderColor: c.line,
+      borderWidth: 1,
+      color: c.soft,
+    });
+    page.drawText(title, { x: x + 10, y: cursorY - 16, size: 10, font: fontHeading, color: c.ink });
+    let ty = cursorY - 32;
+    for (const [label, value] of items) {
+      if (ty < y + 10) break;
+      const line = `${label} ${value || "-"}`;
+      page.drawText(line, { x: x + 10, y: ty, size: 9.5, font: fontBody, color: c.ink });
+      ty -= 12;
+    }
   };
 
+
+
   const drawParagraph = (text) => {
+    if (!text || !String(text).trim()) {
+      cursorY -= 8;
+      return;
+    }
     const lines = wrapText(text, fontBody, 11, width - margin * 2);
     drawTextLines(lines, 11, fontBody);
-    cursorY -= 4;
+    cursorY -= 8;
   };
 
   const drawBullet = (text) => {
@@ -233,9 +285,12 @@ async function generateContractPdf(data) {
   };
 
   const lines = [
+    "Entre les soussign?s :",
+    "",
     "Entre la société Caplogy Services, SAS au capital de 2 000 euros, RCS Pontoise N° SIREN 979847522 APE 6202A, dont le siège social est situé au 4 Avenue des Aubépines, 95500 Gonesse, représentée aux fins des présentes par Monsieur Arezki ABERKANE, agissant en qualité de représentant de la personne morale.",
     "Ci-après dénommée « la société »",
     "ET :",
+    "",
     "{{PRESTA_DENOMINATION}}, immatriculée au RCS de {{PRESTA_RCS}} sous le N° SIREN {{PRESTA_SIREN}}, dont le siège social est {{PRESTA_ADRESSE}}, représentée par {{PRESTA_REPRESENTANT}}, agissant en qualité de {{PRESTA_FONCTION}}.",
     "Ci-après dénommé « le prestataire formateur »,",
     "Article 1 : Objet",
@@ -297,16 +352,25 @@ async function generateContractPdf(data) {
   ];
 
   for (const raw of lines) {
-    const line = applyTokens(raw);
-    if (line.startsWith("Article")) {
-      drawSectionTitle(line);
+    const line = fixMojibake(applyTokens(raw));
+    const lineTrim = line.trimStart();
+    if (!lineTrim) {
+      drawParagraph("");
       continue;
     }
-    if (line.startsWith("●")) {
-      drawBullet(line.replace(/^●\s?/, ""));
+    if (lineTrim.startsWith("Entre les soussign?s")) {
+      drawSectionTitle(lineTrim);
       continue;
     }
-    drawParagraph(line);
+    if (lineTrim.startsWith("Article")) {
+      drawSectionTitle(lineTrim);
+      continue;
+    }
+    if (lineTrim.startsWith("?") || lineTrim.startsWith("?")) {
+      drawBullet(lineTrim.replace(/^(?:•|●)\s?/, ""));
+      continue;
+    }
+    drawParagraph(sanitizePdfText(line));
   }
 
   drawParagraph(`Fait à ${data.lieu_signature || "Vélizy-Villacoublay"}, le ${data.date_signature || "01/10/2025"}`);

@@ -37,7 +37,7 @@ export default function FormateurFormView({
   const FileInput = ({ label, name, accept, required }) => {
     const file = formData[name];
     const isIdentity = name === "identite";
-    const isOtherDoc = !isIdentity && name !== "cv" && name !== "rib";
+    const isOtherDoc = !isIdentity && name !== "cv";
 
     return (
       <div
@@ -86,6 +86,7 @@ export default function FormateurFormView({
             {/* ✅ Autres docs */}
             {isOtherDoc && file && (
               <span
+                className={docStatus[name] === "OK" && !verifyingDocs[name] ? "doc-ok" : ""}
                 style={{
                   fontSize: "20px",
                   animation: verifyingDocs[name] ? "pulse 1.5s infinite" : "none",
@@ -709,6 +710,23 @@ export default function FormateurFormView({
       }}
     >
       <ProgressBar />
+      <style jsx global>{`
+        @keyframes pulse {
+          0% { transform: scale(1); opacity: 0.6; }
+          50% { transform: scale(1.08); opacity: 1; }
+          100% { transform: scale(1); opacity: 0.6; }
+        }
+        @keyframes checkPop {
+          0% { transform: scale(0.6); opacity: 0; }
+          60% { transform: scale(1.2); opacity: 1; }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        .doc-ok {
+          animation: checkPop 0.35s ease-out;
+          color: #10b981;
+          filter: drop-shadow(0 0 6px rgba(16,185,129,0.6));
+        }
+      `}</style>
 
       <div style={{ marginBottom: "40px" }}>
         <h2 style={{ fontSize: "32px", fontWeight: "800", color: "#111", marginBottom: "12px" }}>
@@ -740,22 +758,7 @@ export default function FormateurFormView({
         <FileInput label="Pièce d'identité (vérification automatique)" name="identite" accept=".pdf,.jpg,.png,.jpeg" required />
         <FileInput label="Diplômes et certifications" name="diplomes" accept=".pdf,.jpg,.png,.jpeg" required />
 
-        <div>
-          <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", fontSize: "14px", color: "#374151" }}>
-            RIB (IBAN) <span style={{ color: "#ef4444" }}>*</span>
-          </label>
-          <input
-            type="text"
-            name="rib"
-            placeholder="FR76 1234 5678 9012 3456 7890 123"
-            value={formData.rib}
-            onChange={(e) => updateField("rib", e.target.value)}
-            style={inputStyle}
-            onFocus={(e) => (e.currentTarget.style.borderColor = "#3b82f6")}
-            onBlur={(e) => (e.currentTarget.style.borderColor = "#e5e7eb")}
-            required
-          />
-        </div>
+        <FileInput label="RIB (document)" name="rib" accept=".pdf,.jpg,.png,.jpeg" required />
 
         <FileInput label="Casier judiciaire" name="casier" accept=".pdf,.jpg,.png,.jpeg" required />
         <FileInput label="Assurance RC Professionnelle" name="assurance" accept=".pdf,.jpg,.png,.jpeg" required />

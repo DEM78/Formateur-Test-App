@@ -143,6 +143,18 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
       r.readAsDataURL(file);
     });
 
+  const mergePreferNonEmpty = (base, override) => {
+    const result = { ...(base || {}) };
+    const src = override || {};
+    for (const key of Object.keys(src)) {
+      const v = src[key];
+      if (v != null && String(v).trim() !== "") {
+        result[key] = v;
+      }
+    }
+    return result;
+  };
+
 
   const autoExtractPrestataire = async () => {
     setExtractStatus("loading_prestataire");
@@ -180,10 +192,14 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
 
       if (data?.prestataire) {
         setExtractStatus("prestataire_ok");
-        setPrestataire((prev) => ({
-          ...prev,
-          ...data.prestataire,
-        }));
+        setPrestataire((prev) => {
+          const merged = mergePreferNonEmpty(prev, data.prestataire);
+          return {
+            ...merged,
+            // Toujours prioriser l'adresse du CV si disponible
+            adresse: formData.adresse || merged.adresse || "",
+          };
+        });
       }
     } catch (err) {
       setExtractStatus("prestataire_error");
@@ -197,63 +213,20 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
     }
   };
 
-  const handleGenerateContract = async () => {
-    setGeneratingContract(true);
-    setApiWarning("");
-
+  const handleGenerateContract = () => {
     try {
-      const res = await fetch("/api/generate-contract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ employer, prestataire, variables: { ...variables, signature_data_url: signatureDataUrl, signature_confirmed: signatureConfirmed } }),
-      });
-
-      // ✅ si erreur, lire texte pour debug (souvent HTML)
-      if (!res.ok) {
-        const raw = await res.text();
-        const trimmed = (raw || "").trim();
-        if (trimmed.startsWith("<")) {
-          throw new Error(
-            `Erreur API (HTML reçu).\nURL: /api/generate-contract\nStatus: ${res.status}\nExtrait: ${trimmed
-              .slice(0, 140)
-              .replace(/\s+/g, " ")}...`
-          );
-        }
-        // si JSON
-        try {
-          const j = JSON.parse(trimmed || "{}");
-          throw new Error(j?.error || "Erreur générétion contrat");
-        } catch {
-          throw new Error("Erreur générétion contrat");
-        }
-      }
-
-      const contentType = res.headers.get("content-type") || "";
-      if (!contentType.includes("pdf")) {
-        const raw = await res.text();
-        const trimmed = (raw || "").trim();
-        throw new Error(
-          `Le serveur n'a pas renvoyé un PDF.\nContent-Type: ${contentType}\nExtrait: ${trimmed.slice(0, 200)}`
-        );
-      }
-
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `Contrat_${(prestataire.nom || "Prestataire")}_${(employer.denomination || "Employeur")}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
+      const payload = {
+        employer,
+        prestataire,
+        variables: { ...variables },
+      };
+      localStorage.setItem("caplogy_contract_payload", JSON.stringify(payload));
+      localStorage.setItem("caplogy_force_step", "4");
+      window.location.href = "/contrat";
     } catch (err) {
-      setExtractStatus("prestataire_error");
-      setExtractStatus("employer_error");
-      console.error("Erreur générétion:", err);
-      setApiWarning(err?.message || "Erreur lors de la générétion du contrat");
-      alert("❌ Erreur lors de la générétion du contrat");
-    } finally {
-      setGeneratingContract(false);
+      console.error("Erreur préparation contrat:", err);
+      setApiWarning(err?.message || "Erreur lors de la préparation du contrat");
+      alert("❌ Erreur lors de la préparation du contrat");
     }
   };
 
@@ -584,64 +557,6 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
               onChange={(e) => setVariables({ ...variables, date_signature: e.target.value })}
               style={inputStyle}
             />
-          </div>
-        </div>
-      </div>
-
-      {/* Signature */}
-      <div style={{ marginBottom: "40px" }}>
-        <h3 style={{ fontSize: "20px", fontWeight: "700", color: "#111", marginBottom: "20px" }}>
-          SIGNATURE DU PRESTATAIRE
-        </h3>
-        <div style={{ display: "flex", gap: "20px", alignItems: "center", flexWrap: "wrap" }}>
-          <div style={{ border: "2px dashed #e5e7eb", borderRadius: "14px", padding: "10px", background: "#ffffff" }}>
-            <canvas
-              ref={canvasRef}
-              onMouseDown={startDraw}
-              onMouseMove={draw}
-              onMouseUp={endDraw}
-              onMouseLeave={endDraw}
-              onTouchStart={startDraw}
-              onTouchMove={draw}
-              onTouchEnd={endDraw}
-              style={{ display: "block", borderRadius: "10px" }}
-            />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            <button
-              type="button"
-              onClick={() => setSignatureConfirmed(true)}
-              disabled={!signatureDataUrl}
-              style={{
-                padding: "10px 14px",
-                borderRadius: "10px",
-                border: "none",
-                background: signatureConfirmed ?"#10b981" : "#3b82f6",
-                color: "#fff",
-                fontWeight: "800",
-                cursor: !signatureDataUrl ?"not-allowed" : "pointer",
-                opacity: !signatureDataUrl ?0.6 : 1,
-              }}
-            >
-              {signatureConfirmed ?"Signature valid?e ✓" : "Valider la signature"}
-            </button>
-            <button
-              type="button"
-              onClick={clearSignature}
-              style={{
-                padding: "10px 14px",
-                borderRadius: "10px",
-                border: "2px solid #e5e7eb",
-                background: "#fff",
-                fontWeight: "700",
-                cursor: "pointer",
-              }}
-            >
-              Effacer la signature
-            </button>
-            <div style={{ fontSize: "12px", color: "#6b7280" }}>
-              Signe dans la zone, la signature sera int?gr?e au PDF.
-            </div>
           </div>
         </div>
       </div>
