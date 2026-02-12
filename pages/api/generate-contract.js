@@ -35,6 +35,8 @@ export default async function handler(req, res) {
       prestataire_siret: prestataire.siret || "",
       prestataire_rcs: prestataire.rcs || "",
       prestataire_adresse: prestataire.adresse || "",
+      prestataire_email: prestataire.email || prestataire.mail || "",
+      prestataire_telephone: prestataire.telephone || prestataire.phone || "",
       prestataire_representant: prestataire.representant || "",
       prestataire_fonction: prestataire.fonction_representant || "",
 
@@ -75,15 +77,21 @@ async function generateContractPdf(data) {
   const fontBodyBold = await pdfDoc.embedFont(StandardFonts.TimesRomanBold);
   const fontHeading = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontUI = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontItalic = await pdfDoc.embedFont(StandardFonts.TimesRomanItalic);
 
-  const margin = 46;
-  const lineHeight = 16;
+  const margin = 50;
+  const lineHeight = 15;
 
+  // Palette de couleurs professionnelle (nuances de bleu uniquement)
   const c = {
-    ink: rgb(0.07, 0.08, 0.1),
-    muted: rgb(0.4, 0.42, 0.45),
-    line: rgb(0.85, 0.86, 0.88),
-    soft: rgb(0.97, 0.97, 0.98),
+    primary: rgb(0.09, 0.28, 0.51),      // Bleu foncé professionnel
+    secondary: rgb(0.2, 0.45, 0.72),     // Bleu moyen
+    accent: rgb(0.35, 0.55, 0.75),       // Bleu clair pour accents
+    ink: rgb(0.15, 0.15, 0.18),          // Texte principal
+    muted: rgb(0.45, 0.47, 0.50),        // Texte secondaire
+    line: rgb(0.82, 0.84, 0.86),         // Lignes légères
+    lightBg: rgb(0.96, 0.97, 0.98),      // Fond clair
+    white: rgb(1, 1, 1),                 // Blanc pur
   };
 
   let { width, height } = page.getSize();
@@ -93,12 +101,12 @@ async function generateContractPdf(data) {
     return String(input || "")
       .replace(/\?/g, "")
       .replace(/[•●]/g, "-")
-      .replace(/[“”]/g, '"')
-      .replace(/[‘’]/g, "'")
+      .replace(/[""]/g, '"')
+      .replace(/['']/g, "'")
       .replace(/[–—]/g, "-");
   };
 
-const wrapText = (text, usedFont, size, maxW) => {
+  const wrapText = (text, usedFont, size, maxW) => {
     const safeText = sanitizePdfText(text);
     const words = String(safeText || "").split(/\s+/).filter(Boolean);
     const lines = [];
@@ -136,92 +144,389 @@ const wrapText = (text, usedFont, size, maxW) => {
   };
 
   const ensureSpace = (needed) => {
-    if (cursorY - needed < margin) newPage();
+    if (cursorY - needed < margin + 20) newPage();
   };
 
-  const drawTextLines = (lines, size, usedFont) => {
+  const drawTextLines = (lines, size, usedFont, color = c.ink) => {
     for (const line of lines) {
       ensureSpace(lineHeight);
-      page.drawText(line, { x: margin, y: cursorY, size, font: usedFont, color: c.ink });
+      page.drawText(line, { x: margin, y: cursorY, size, font: usedFont, color });
       cursorY -= lineHeight;
     }
   };
 
-  const drawCenteredTitle = (text) => {
-    const size = 18;
-    const lines = wrapText(text, fontHeading, size, width - margin * 2);
-    for (const line of lines) {
-      const lineW = fontHeading.widthOfTextAtSize(line, size);
-      const x = (width - lineW) / 2;
-      ensureSpace(lineHeight + 6);
-      page.drawText(line, { x, y: cursorY, size, font: fontHeading, color: c.ink });
-      cursorY -= lineHeight + 2;
+  const drawTextLinesJustified = (lines, size, usedFont, maxW) => {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      ensureSpace(lineHeight);
+
+      const words = String(line || "").split(/\s+/).filter(Boolean);
+      const isLastLine = i === lines.length - 1;
+
+      if (isLastLine || words.length <= 1) {
+        page.drawText(line, { x: margin, y: cursorY, size, font: usedFont, color: c.ink });
+        cursorY -= lineHeight;
+        continue;
+      }
+
+      const spaceW = usedFont.widthOfTextAtSize(" ", size);
+      const wordsW = words.reduce((acc, w) => acc + usedFont.widthOfTextAtSize(w, size), 0);
+      const gaps = words.length - 1;
+      const totalDefaultSpacesW = gaps * spaceW;
+      const extra = Math.max(0, maxW - (wordsW + totalDefaultSpacesW));
+      const extraPerGap = extra / gaps;
+
+      let x = margin;
+      for (let wi = 0; wi < words.length; wi++) {
+        const w = words[wi];
+        page.drawText(w, { x, y: cursorY, size, font: usedFont, color: c.ink });
+        x += usedFont.widthOfTextAtSize(w, size);
+        if (wi < gaps) x += spaceW + extraPerGap;
+      }
+      cursorY -= lineHeight;
     }
-    cursorY -= 8;
-    page.drawRectangle({ x: margin, y: cursorY, width: width - margin * 2, height: 1, color: c.line });
-    cursorY -= 16;
   };
 
-  const drawSectionTitle = (text) => {
-    ensureSpace(24);
-    page.drawText(text.toUpperCase(), { x: margin, y: cursorY, size: 11, font: fontHeading, color: c.ink });
-    page.drawRectangle({ x: margin, y: cursorY - 4, width: width - margin * 2, height: 1, color: c.line });
-    cursorY -= 16;
-  };  const drawInfoBlock = (title, items) => {
-    ensureSpace(96);
-    const boxW = (width - margin * 2 - 16) / 2;
-    const boxH = 92;
-    const x = title === "L'EMPLOYEUR" ? margin : margin + boxW + 16;
+  // En-tête avec bande colorée
+  const drawHeader = () => {
+    // Bande bleue en haut
+    page.drawRectangle({
+      x: 0,
+      y: height - 10,
+      width: width,
+      height: 10,
+      color: c.primary,
+    });
+  };
+
+  // Logo centré
+  const drawCenteredLogo = (logoImage) => {
+    if (!logoImage) return;
+    
+    const maxW = 180;
+    const maxH = 60;
+    const scale = Math.min(maxW / logoImage.width, maxH / logoImage.height);
+    const w = logoImage.width * scale;
+    const h = logoImage.height * scale;
+    const x = (width - w) / 2;
+    
+    page.drawImage(logoImage, { 
+      x, 
+      y: cursorY - h, 
+      width: w, 
+      height: h 
+    });
+    
+    cursorY -= h + 20;
+  };
+
+  // Titre principal centré avec design moderne
+  const drawMainTitle = (text) => {
+    const size = 22;
+    ensureSpace(60);
+    
+    const textWidth = fontHeading.widthOfTextAtSize(text, size);
+    const x = (width - textWidth) / 2;
+    
+    // Texte principal
+    page.drawText(text.toUpperCase(), { 
+      x, 
+      y: cursorY, 
+      size, 
+      font: fontHeading, 
+      color: c.primary 
+    });
+    
+    cursorY -= 12;
+    
+    // Ligne décorative dorée sous le titre
+    const lineW = textWidth + 40;
+    const lineX = (width - lineW) / 2;
+    page.drawRectangle({
+      x: lineX,
+      y: cursorY - 2,
+      width: lineW,
+      height: 3,
+      color: c.accent,
+    });
+    
+    cursorY -= 35;
+  };
+
+  // Section "Entre les soussignés" avec design élégant
+  const drawPartiesHeader = () => {
+    ensureSpace(40);
+    
+    const text = "ENTRE LES SOUSSIGNÉS";
+    const size = 13;
+    const textWidth = fontHeading.widthOfTextAtSize(text, size);
+    const x = (width - textWidth) / 2;
+    
+    // Rectangle de fond
+    page.drawRectangle({
+      x: margin - 10,
+      y: cursorY - 25,
+      width: width - (margin - 10) * 2,
+      height: 32,
+      color: c.lightBg,
+      borderColor: c.line,
+      borderWidth: 1,
+    });
+    
+    page.drawText(text, {
+      x,
+      y: cursorY - 8,
+      size,
+      font: fontHeading,
+      color: c.primary,
+    });
+    
+    cursorY -= 40;
+  };
+
+  // Bloc partie contractante avec design amélioré
+  const drawPartyBlock = (title, items, isLeft = true) => {
+    const rows = Math.ceil(items.length / 2);
+    const rowHeight = 24;
+    const boxH = Math.max(120, 44 + rows * rowHeight + 8);
+    ensureSpace(boxH + 20);
+    
+    const boxW = width - margin * 2;
+    const x = margin;
     const y = cursorY - boxH;
+    
+    // Fond avec bordure
     page.drawRectangle({
       x,
       y,
       width: boxW,
       height: boxH,
-      borderColor: c.line,
-      borderWidth: 1,
-      color: c.soft,
+      color: c.white,
+      borderColor: c.secondary,
+      borderWidth: 1.5,
     });
-    page.drawText(title, { x: x + 10, y: cursorY - 16, size: 10, font: fontHeading, color: c.ink });
-    let ty = cursorY - 32;
-    for (const [label, value] of items) {
+    
+    // Bande de titre colorée
+    page.drawRectangle({
+      x,
+      y: y + boxH - 28,
+      width: boxW,
+      height: 28,
+      color: c.primary,
+    });
+    
+    // Petit accent doré
+    page.drawRectangle({
+      x,
+      y: y + boxH - 30,
+      width: 4,
+      height: 30,
+      color: c.accent,
+    });
+    
+    // Titre en blanc
+    page.drawText(title, { 
+      x: x + 15, 
+      y: y + boxH - 19, 
+      size: 11, 
+      font: fontHeading, 
+      color: c.white 
+    });
+    
+    // Contenu en 2 colonnes pour reduire la hauteur du bloc
+    const contentTop = y + boxH - 43;
+    const colGap = 16;
+    const colW = (boxW - 30 - colGap) / 2;
+    const leftX = x + 15;
+    const rightX = leftX + colW + colGap;
+
+    for (let i = 0; i < items.length; i++) {
+      const [label, value] = items[i];
+      const row = Math.floor(i / 2);
+      const isRight = i % 2 === 1;
+      const colX = isRight ? rightX : leftX;
+      const ty = contentTop - row * rowHeight;
       if (ty < y + 10) break;
-      const line = `${label} ${value || "-"}`;
-      page.drawText(line, { x: x + 10, y: ty, size: 9.5, font: fontBody, color: c.ink });
-      ty -= 12;
+
+      const raw = `${label}: ${value || "-"}`;
+      const line = wrapText(raw, fontBody, 9.2, colW)[0];
+      page.drawText(line, {
+        x: colX,
+        y: ty - 10,
+        size: 9.2,
+        font: fontBody,
+        color: c.ink,
+      });
     }
+    
+    cursorY -= boxH + 20;
   };
 
-
+  // Titre de section avec style moderne
+  const drawSectionTitle = (text) => {
+    ensureSpace(35);
+    
+    // Rectangle de fond
+    page.drawRectangle({
+      x: margin - 5,
+      y: cursorY - 22,
+      width: width - (margin - 5) * 2,
+      height: 26,
+      color: c.lightBg,
+    });
+    
+    // Accent coloré à gauche
+    page.drawRectangle({
+      x: margin - 5,
+      y: cursorY - 22,
+      width: 4,
+      height: 26,
+      color: c.primary,
+    });
+    
+    page.drawText(text.toUpperCase(), { 
+      x: margin + 8, 
+      y: cursorY - 8, 
+      size: 11, 
+      font: fontHeading, 
+      color: c.primary 
+    });
+    
+    cursorY -= 32;
+  };
 
   const drawParagraph = (text) => {
     if (!text || !String(text).trim()) {
-      cursorY -= 8;
+      cursorY -= 6;
       return;
     }
-    const lines = wrapText(text, fontBody, 11, width - margin * 2);
-    drawTextLines(lines, 11, fontBody);
+    const maxW = width - margin * 2;
+    const lines = wrapText(text, fontBody, 10.5, maxW);
+    
+    // Utiliser la justification complète pour tous les paragraphes
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      ensureSpace(lineHeight);
+
+      const words = String(line || "").split(/\s+/).filter(Boolean);
+      const isLastLine = i === lines.length - 1;
+
+      // Dernière ligne : alignée à gauche seulement
+      if (isLastLine || words.length <= 1) {
+        page.drawText(line, { x: margin, y: cursorY, size: 10.5, font: fontBody, color: c.ink });
+        cursorY -= lineHeight;
+        continue;
+      }
+
+      // Justification complète : distribuer l'espace entre les mots
+      const spaceW = fontBody.widthOfTextAtSize(" ", 10.5);
+      const wordsW = words.reduce((acc, w) => acc + fontBody.widthOfTextAtSize(w, 10.5), 0);
+      const gaps = words.length - 1;
+      const totalDefaultSpacesW = gaps * spaceW;
+      const extra = Math.max(0, maxW - (wordsW + totalDefaultSpacesW));
+      const extraPerGap = gaps > 0 ? extra / gaps : 0;
+
+      let x = margin;
+      for (let wi = 0; wi < words.length; wi++) {
+        const w = words[wi];
+        page.drawText(w, { x, y: cursorY, size: 10.5, font: fontBody, color: c.ink });
+        x += fontBody.widthOfTextAtSize(w, 10.5);
+        if (wi < gaps) x += spaceW + extraPerGap;
+      }
+      cursorY -= lineHeight;
+    }
+    
     cursorY -= 8;
   };
 
   const drawBullet = (text) => {
     const bullet = "•";
-    const textIndent = 18;
-    const lines = wrapText(text, fontBody, 11, width - margin * 2 - textIndent);
+    const textIndent = 20;
+    const maxW = width - margin * 2 - textIndent;
+    const lines = wrapText(text, fontBody, 10.5, maxW);
     if (!lines.length) return;
+    
     ensureSpace(lineHeight);
-    page.drawText(bullet, { x: margin, y: cursorY, size: 11, font: fontBodyBold, color: c.ink });
-    page.drawText(lines[0], { x: margin + textIndent, y: cursorY, size: 11, font: fontBody, color: c.ink });
+    
+    // Puce colorée
+    page.drawText(bullet, { 
+      x: margin + 2, 
+      y: cursorY, 
+      size: 12, 
+      font: fontBodyBold, 
+      color: c.secondary 
+    });
+    
+    // Première ligne avec justification
+    const firstLineWords = String(lines[0] || "").split(/\s+/).filter(Boolean);
+    if (lines.length === 1 || firstLineWords.length <= 1) {
+      // Une seule ligne ou ligne courte : pas de justification
+      page.drawText(lines[0], { 
+        x: margin + textIndent, 
+        y: cursorY, 
+        size: 10.5, 
+        font: fontBody, 
+        color: c.ink 
+      });
+    } else {
+      // Justification complète pour la première ligne si ce n'est pas la dernière
+      const spaceW = fontBody.widthOfTextAtSize(" ", 10.5);
+      const wordsW = firstLineWords.reduce((acc, w) => acc + fontBody.widthOfTextAtSize(w, 10.5), 0);
+      const gaps = firstLineWords.length - 1;
+      const totalDefaultSpacesW = gaps * spaceW;
+      const extra = Math.max(0, maxW - (wordsW + totalDefaultSpacesW));
+      const extraPerGap = gaps > 0 ? extra / gaps : 0;
+
+      let x = margin + textIndent;
+      for (let wi = 0; wi < firstLineWords.length; wi++) {
+        const w = firstLineWords[wi];
+        page.drawText(w, { x, y: cursorY, size: 10.5, font: fontBody, color: c.ink });
+        x += fontBody.widthOfTextAtSize(w, 10.5);
+        if (wi < gaps) x += spaceW + extraPerGap;
+      }
+    }
+    
     cursorY -= lineHeight;
+    
+    // Lignes suivantes avec justification (sauf la dernière)
     for (let i = 1; i < lines.length; i++) {
       ensureSpace(lineHeight);
-      page.drawText(lines[i], { x: margin + textIndent, y: cursorY, size: 11, font: fontBody, color: c.ink });
+      const line = lines[i];
+      const words = String(line || "").split(/\s+/).filter(Boolean);
+      const isLastLine = i === lines.length - 1;
+      
+      if (isLastLine || words.length <= 1) {
+        // Dernière ligne : alignée à gauche
+        page.drawText(line, { 
+          x: margin + textIndent, 
+          y: cursorY, 
+          size: 10.5, 
+          font: fontBody, 
+          color: c.ink 
+        });
+      } else {
+        // Justification complète
+        const spaceW = fontBody.widthOfTextAtSize(" ", 10.5);
+        const wordsW = words.reduce((acc, w) => acc + fontBody.widthOfTextAtSize(w, 10.5), 0);
+        const gaps = words.length - 1;
+        const totalDefaultSpacesW = gaps * spaceW;
+        const extra = Math.max(0, maxW - (wordsW + totalDefaultSpacesW));
+        const extraPerGap = gaps > 0 ? extra / gaps : 0;
+
+        let x = margin + textIndent;
+        for (let wi = 0; wi < words.length; wi++) {
+          const w = words[wi];
+          page.drawText(w, { x, y: cursorY, size: 10.5, font: fontBody, color: c.ink });
+          x += fontBody.widthOfTextAtSize(w, 10.5);
+          if (wi < gaps) x += spaceW + extraPerGap;
+        }
+      }
       cursorY -= lineHeight;
     }
     cursorY -= 2;
   };
 
-  // Logo (optionnel)
+  // Charger le logo
   let logoImage = null;
   try {
     const logoPath = path.join(process.cwd(), "public", "Logo_caplogy_contrat.png");
@@ -233,18 +538,17 @@ const wrapText = (text, usedFont, size, maxW) => {
     console.warn("Logo non chargé:", err.message);
   }
 
-  if (logoImage) {
-    const maxW = 120;
-    const maxH = 40;
-    const scale = Math.min(maxW / logoImage.width, maxH / logoImage.height);
-    const w = logoImage.width * scale;
-    const h = logoImage.height * scale;
-    page.drawImage(logoImage, { x: width - margin - w, y: height - margin - h + 6, width: w, height: h });
-  }
+  // Dessiner l'en-tête
+  drawHeader();
+  cursorY -= 25;
+  
+  // Logo centré
+  drawCenteredLogo(logoImage);
+  
+  // Titre principal
+  drawMainTitle("Contrat de prestation de service");
 
-  drawCenteredTitle("Contrat de prestation de service");
-
-  // Extraction du RCS depuis la ville (ex: "MELUN" depuis l'adresse)
+  // Extraction du RCS depuis la ville
   const extraireVilleRCS = (adresse) => {
     if (!adresse) return "Melun";
     const match = adresse.match(/\d{5}\s+([A-Z\s-]+)/i);
@@ -256,6 +560,8 @@ const wrapText = (text, usedFont, size, maxW) => {
     PRESTA_SIREN: data.prestataire_siren || "___________",
     PRESTA_SIRET: data.prestataire_siret || "___________",
     PRESTA_ADRESSE: data.prestataire_adresse || "___________",
+    PRESTA_EMAIL: data.prestataire_email || "___________",
+    PRESTA_TELEPHONE: data.prestataire_telephone || "___________",
     PRESTA_REPRESENTANT: `${data.prestataire_prenom || ""} ${data.prestataire_nom || ""}`.trim() || data.prestataire_representant || "___________",
     PRESTA_FONCTION: data.prestataire_fonction || "représentant de la personne morale",
     PRESTA_RCS: extraireVilleRCS(data.prestataire_adresse),
@@ -264,7 +570,13 @@ const wrapText = (text, usedFont, size, maxW) => {
     TAUX_HORAIRE: data.taux_journalier || "25",
     EMPLOYER_ADRESSE: data.employer_adresse || "36 Avenue de l'Europe, 78140 Vélizy-Villacoublay",
     EMPLOYER_SIREN: data.employer_siren || "893 395 608",
+    EMPLOYER_SIRET: data.employer_siret || "___________",
     EMPLOYER_RCS: data.employer_rcs || "VERSAILLES",
+    EMPLOYER_DENOMINATION: data.employer_denomination || "CAPLOGY SERVICES",
+    EMPLOYER_FORME: data.employer_forme_juridique || "SAS",
+    EMPLOYER_CAPITAL: data.employer_capital || "",
+    EMPLOYER_REPRESENTANT: data.employer_representant || "___________",
+    EMPLOYER_FONCTION: data.employer_fonction || "representant de la personne morale",
   };
 
   const applyTokens = (line) => {
@@ -284,15 +596,93 @@ const wrapText = (text, usedFont, size, maxW) => {
       .replace(/{{EMPLOYER_RCS}}/g, tokens.EMPLOYER_RCS);
   };
 
+  // En-tête parties contractantes
+  drawPartiesHeader();
+
+  // Bloc Société
+  drawPartyBlock("LA SOCIÉTÉ", [
+    ["Dénomination", tokens.EMPLOYER_DENOMINATION],
+    ["Forme juridique", tokens.EMPLOYER_CAPITAL ? `${tokens.EMPLOYER_FORME} (capital : ${tokens.EMPLOYER_CAPITAL})` : tokens.EMPLOYER_FORME],
+    ["SIREN/SIRET", tokens.EMPLOYER_SIRET || tokens.EMPLOYER_SIREN],
+    ["RCS", tokens.EMPLOYER_RCS],
+    ["Siège social", tokens.EMPLOYER_ADRESSE],
+    ["Représentant", tokens.EMPLOYER_REPRESENTANT],
+    ["Fonction", tokens.EMPLOYER_FONCTION],
+  ], true);
+
+  cursorY -= 8;
+  
+  // Texte "ci-après dénommée"
+  const denom1 = "Ci-après dénommée « la société »";
+  const denom1Width = fontItalic.widthOfTextAtSize(denom1, 10);
+  page.drawText(denom1, {
+    x: (width - denom1Width) / 2,
+    y: cursorY,
+    size: 10,
+    font: fontItalic,
+    color: c.muted,
+  });
+  cursorY -= 25;
+
+  // Séparateur "ET"
+  const etText = "ET";
+  const etWidth = fontHeading.widthOfTextAtSize(etText, 12);
+  const etX = (width - etWidth) / 2;
+  
+  page.drawRectangle({
+    x: margin,
+    y: cursorY - 8,
+    width: (width - margin * 2 - etWidth - 20) / 2,
+    height: 1,
+    color: c.line,
+  });
+  
+  page.drawText(etText, {
+    x: etX,
+    y: cursorY - 5,
+    size: 12,
+    font: fontHeading,
+    color: c.primary,
+  });
+  
+  page.drawRectangle({
+    x: etX + etWidth + 10,
+    y: cursorY - 8,
+    width: (width - margin * 2 - etWidth - 20) / 2,
+    height: 1,
+    color: c.line,
+  });
+  
+  cursorY -= 25;
+
+  // Bloc Prestataire
+  drawPartyBlock("LE PRESTATAIRE FORMATEUR", [
+    ["Dénomination", tokens.PRESTA_DENOMINATION],
+    ["Nom / Prénom", `${data.prestataire_prenom || ""} ${data.prestataire_nom || ""}`.trim() || "___________"],
+    ["SIREN/SIRET", tokens.PRESTA_SIRET || tokens.PRESTA_SIREN],
+    ["RCS", `${tokens.PRESTA_RCS}`],
+    ["Siège social", tokens.PRESTA_ADRESSE],
+    ["Email", tokens.PRESTA_EMAIL],
+    ["Téléphone", tokens.PRESTA_TELEPHONE],
+    ["Représentant", tokens.PRESTA_REPRESENTANT],
+  ], false);
+
+  cursorY -= 8;
+  
+  // Texte "ci-après dénommé"
+  const denom2 = "Ci-après dénommé « le prestataire formateur »";
+  const denom2Width = fontItalic.widthOfTextAtSize(denom2, 10);
+  page.drawText(denom2, {
+    x: (width - denom2Width) / 2,
+    y: cursorY,
+    size: 10,
+    font: fontItalic,
+    color: c.muted,
+  });
+  cursorY -= 30;
+
+  // Articles du contrat
   const lines = [
-    "Entre les soussign?s :",
-    "",
-    "Entre la société Caplogy Services, SAS au capital de 2 000 euros, RCS Pontoise N° SIREN 979847522 APE 6202A, dont le siège social est situé au 4 Avenue des Aubépines, 95500 Gonesse, représentée aux fins des présentes par Monsieur Arezki ABERKANE, agissant en qualité de représentant de la personne morale.",
-    "Ci-après dénommée « la société »",
-    "ET :",
-    "",
-    "{{PRESTA_DENOMINATION}}, immatriculée au RCS de {{PRESTA_RCS}} sous le N° SIREN {{PRESTA_SIREN}}, dont le siège social est {{PRESTA_ADRESSE}}, représentée par {{PRESTA_REPRESENTANT}}, agissant en qualité de {{PRESTA_FONCTION}}.",
-    "Ci-après dénommé « le prestataire formateur »,",
     "Article 1 : Objet",
     "● Le contrat a pour objet d'une ou plusieurs prestations suivantes : prestations de formation et d'enseignement.",
     "● Le prestataire formateur a pour activité l'enseignement et la formation dans des centres de formations ou des entreprises.",
@@ -358,63 +748,198 @@ const wrapText = (text, usedFont, size, maxW) => {
       drawParagraph("");
       continue;
     }
-    if (lineTrim.startsWith("Entre les soussign?s")) {
-      drawSectionTitle(lineTrim);
-      continue;
-    }
     if (lineTrim.startsWith("Article")) {
       drawSectionTitle(lineTrim);
       continue;
     }
-    if (lineTrim.startsWith("?") || lineTrim.startsWith("?")) {
+    if (lineTrim.startsWith("•") || lineTrim.startsWith("●")) {
       drawBullet(lineTrim.replace(/^(?:•|●)\s?/, ""));
       continue;
     }
     drawParagraph(sanitizePdfText(line));
   }
 
-  drawParagraph(`Fait à ${data.lieu_signature || "Vélizy-Villacoublay"}, le ${data.date_signature || "01/10/2025"}`);
+  // Lieu et date de signature
+  ensureSpace(50);
+  cursorY -= 10;
+  
+  const dateText = `Fait à ${data.lieu_signature || "Vélizy-Villacoublay"}, le ${data.date_signature || "01/10/2025"}`;
+  const dateWidth = fontBodyBold.widthOfTextAtSize(dateText, 11);
+  page.drawText(dateText, {
+    x: (width - dateWidth) / 2,
+    y: cursorY,
+    size: 11,
+    font: fontBodyBold,
+    color: c.ink,
+  });
+  
+  cursorY -= 35;
 
-  const signBoxW = (width - margin * 2 - 12) / 2;
-  const signBoxH = 84;
-  ensureSpace(signBoxH + 32);
+  // Zones de signature améliorées
+  const signBoxW = (width - margin * 2 - 30) / 2;
+  const signBoxH = 110;
+  ensureSpace(signBoxH + 20);
 
-  // Signature boxes
-  page.drawRectangle({ x: margin, y: cursorY - signBoxH, width: signBoxW, height: signBoxH, borderColor: c.line, borderWidth: 1, color: c.soft });
-  page.drawRectangle({ x: margin + signBoxW + 12, y: cursorY - signBoxH, width: signBoxW, height: signBoxH, borderColor: c.line, borderWidth: 1, color: c.soft });
+  // Signature prestataire
+  page.drawRectangle({ 
+    x: margin, 
+    y: cursorY - signBoxH, 
+    width: signBoxW, 
+    height: signBoxH, 
+    borderColor: c.secondary, 
+    borderWidth: 1.5, 
+    color: c.white 
+  });
+  
+  // Bandeau titre prestataire
+  page.drawRectangle({ 
+    x: margin, 
+    y: cursorY - 28, 
+    width: signBoxW, 
+    height: 28, 
+    color: c.primary 
+  });
+  
+  page.drawText("POUR LE PRESTATAIRE", { 
+    x: margin + 12, 
+    y: cursorY - 18, 
+    size: 10, 
+    font: fontHeading, 
+    color: c.white 
+  });
+  
+  page.drawText("Signature précédée de la mention", { 
+    x: margin + 12, 
+    y: cursorY - 42, 
+    size: 8.5, 
+    font: fontUI, 
+    color: c.muted 
+  });
+  
+  page.drawText("« Lu et approuvé »", { 
+    x: margin + 12, 
+    y: cursorY - 54, 
+    size: 8.5, 
+    font: fontBodyBold, 
+    color: c.ink 
+  });
 
-  page.drawText("Pour le prestataire", { x: margin + 10, y: cursorY - 18, size: 10, font: fontUI, color: c.muted });
-  page.drawText("Signature", { x: margin + 10, y: cursorY - 32, size: 9, font: fontUI, color: c.muted });
+  // Signature entreprise
+  const signX2 = margin + signBoxW + 30;
+  
+  page.drawRectangle({ 
+    x: signX2, 
+    y: cursorY - signBoxH, 
+    width: signBoxW, 
+    height: signBoxH, 
+    borderColor: c.secondary, 
+    borderWidth: 1.5, 
+    color: c.white 
+  });
+  
+  // Bandeau titre entreprise
+  page.drawRectangle({ 
+    x: signX2, 
+    y: cursorY - 28, 
+    width: signBoxW, 
+    height: 28, 
+    color: c.primary 
+  });
+  
+  page.drawText("POUR L'ENTREPRISE", { 
+    x: signX2 + 12, 
+    y: cursorY - 18, 
+    size: 10, 
+    font: fontHeading, 
+    color: c.white 
+  });
+  
+  page.drawText("Signature précédée de la mention", { 
+    x: signX2 + 12, 
+    y: cursorY - 42, 
+    size: 8.5, 
+    font: fontUI, 
+    color: c.muted 
+  });
+  
+  page.drawText("« Lu et approuvé »", { 
+    x: signX2 + 12, 
+    y: cursorY - 54, 
+    size: 8.5, 
+    font: fontBodyBold, 
+    color: c.ink 
+  });
 
-  page.drawText("Pour l?entreprise", { x: margin + signBoxW + 22, y: cursorY - 18, size: 10, font: fontUI, color: c.muted });
-  page.drawText("Pr?c?der avec la mention ? lu et approuv? ?", { x: margin + signBoxW + 22, y: cursorY - 32, size: 8.5, font: fontUI, color: c.muted });
-
+  // Insérer la signature si disponible
   let signatureImage = null;
-  if (data.signature_data_url) {
+  if (data.signature_data_url && data.signature_confirmed) {
     try {
-      const b64 = data.signature_data_url.split(",").pop();
-      const bytes = Buffer.from(b64, "base64");
-      signatureImage = await pdfDoc.embedPng(bytes);
-    } catch {
+      const base64Data = data.signature_data_url.includes(',') 
+        ? data.signature_data_url.split(",")[1] 
+        : data.signature_data_url;
+      
+      const bytes = Buffer.from(base64Data, "base64");
+      
+      // Détecter le format de l'image (PNG ou JPEG)
+      const isPng = data.signature_data_url.includes('image/png');
+      
+      if (isPng) {
+        signatureImage = await pdfDoc.embedPng(bytes);
+      } else {
+        // Tenter JPEG si ce n'est pas PNG
+        signatureImage = await pdfDoc.embedJpg(bytes);
+      }
+    } catch (error) {
+      console.warn("Erreur chargement signature:", error.message);
       signatureImage = null;
     }
   }
+  
   if (signatureImage) {
-    const padX = 12;
-    const padY = 16;
+    const padX = 15;
+    const padY = 20;
     const maxW = signBoxW - padX * 2;
-    const maxH = signBoxH - 40;
+    const maxH = signBoxH - 65;
     const scale = Math.min(maxW / signatureImage.width, maxH / signatureImage.height);
     const w = signatureImage.width * scale;
     const h = signatureImage.height * scale;
     const x = margin + padX + (maxW - w) / 2;
     const y = cursorY - signBoxH + padY + (maxH - h) / 2;
+    
     page.drawImage(signatureImage, { x, y, width: w, height: h });
   }
 
-  cursorY -= signBoxH + 22;
+  cursorY -= signBoxH + 25;
 
-  drawParagraph(`CAPLOGY SAS - Siège social : ${tokens.EMPLOYER_ADRESSE} N° SIREN : ${tokens.EMPLOYER_SIREN} - RCS ${tokens.EMPLOYER_RCS}`);
+  // Pied de page élégant
+  ensureSpace(40);
+  
+  // Ligne de séparation
+  page.drawRectangle({
+    x: margin,
+    y: cursorY,
+    width: width - margin * 2,
+    height: 1,
+    color: c.line,
+  });
+  
+  cursorY -= 15;
+  
+  const footerText = `CAPLOGY SAS - Siège social : ${tokens.EMPLOYER_ADRESSE} - N° SIREN : ${tokens.EMPLOYER_SIREN} - RCS ${tokens.EMPLOYER_RCS}`;
+  const footerLines = wrapText(footerText, fontUI, 8, width - margin * 2);
+  
+  for (const line of footerLines) {
+    const lineW = fontUI.widthOfTextAtSize(line, 8);
+    const x = (width - lineW) / 2;
+    page.drawText(line, {
+      x,
+      y: cursorY,
+      size: 8,
+      font: fontUI,
+      color: c.muted,
+    });
+    cursorY -= 11;
+  }
 
   return await pdfDoc.save();
 }

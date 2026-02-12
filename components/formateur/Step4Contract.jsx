@@ -18,6 +18,8 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
   const [prestataire, setPrestataire] = useState({
     nom: formData.nom || "",
     prenom: formData.prenom || "",
+    email: formData.email || "",
+    telephone: formData.telephone || "",
     denomination: "",
     siren: "",
     siret: "",
@@ -215,9 +217,14 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
 
   const handleGenerateContract = () => {
     try {
+      const prestataireForContract = {
+        ...prestataire,
+        email: prestataire.email || formData.email || "",
+        telephone: prestataire.telephone || formData.telephone || "",
+      };
       const payload = {
         employer,
-        prestataire,
+        prestataire: prestataireForContract,
         variables: { ...variables },
       };
       localStorage.setItem("caplogy_contract_payload", JSON.stringify(payload));
@@ -626,12 +633,14 @@ export default function Step4Contract({ formData, setStep, onFinalSubmit }) {
 
             <div style={{ background: "#f8fafc", border: "1px solid #e5e7eb", borderRadius: "14px", padding: "16px" }}>
               <div style={{ fontWeight: "800", marginBottom: "10px", color: "#0f172a" }}>Le Prestataire</div>
-              <div style={{ color: "#111827" }}><strong>Dénomination :</strong> {prestataire.denomination || "-"}</div>
-              <div style={{ color: "#111827" }}><strong>SIREN :</strong> {prestataire.siren || "-"}</div>
-              <div style={{ color: "#111827" }}><strong>Adresse :</strong> {prestataire.adresse || "-"}</div>
-              <div style={{ color: "#111827" }}><strong>Représentant :</strong> {prestataire.representant || "-"}</div>
-            </div>
+            <div style={{ color: "#111827" }}><strong>Dénomination :</strong> {prestataire.denomination || "-"}</div>
+            <div style={{ color: "#111827" }}><strong>SIREN :</strong> {prestataire.siren || "-"}</div>
+            <div style={{ color: "#111827" }}><strong>Adresse :</strong> {prestataire.adresse || "-"}</div>
+            <div style={{ color: "#111827" }}><strong>Email :</strong> {prestataire.email || "-"}</div>
+            <div style={{ color: "#111827" }}><strong>Téléphone :</strong> {prestataire.telephone || "-"}</div>
+            <div style={{ color: "#111827" }}><strong>Représentant :</strong> {prestataire.representant || "-"}</div>
           </div>
+        </div>
         </div>
 
         <div style={{ fontSize: "13px", color: "#475569" }}>

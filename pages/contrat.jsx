@@ -51,8 +51,11 @@ export default function ContratPage() {
           throw new Error(txt || `Erreur API ${res.status}`);
         }
         const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        setPdfUrl(url);
+        const nextUrl = URL.createObjectURL(blob);
+        setPdfUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return nextUrl;
+        });
       } catch (e) {
         setError(e?.message || "Erreur génération contrat");
       } finally {
@@ -65,6 +68,40 @@ export default function ContratPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payload]);
+
+  const regeneratePreview = async (overrideVariables = {}) => {
+    if (!payload) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/generate-contract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          employer: payload.employer,
+          prestataire: payload.prestataire,
+          variables: {
+            ...payload.variables,
+            ...overrideVariables,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `Erreur API ${res.status}`);
+      }
+      const blob = await res.blob();
+      const nextUrl = URL.createObjectURL(blob);
+      setPdfUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return nextUrl;
+      });
+    } catch (e) {
+      setError(e?.message || "Erreur génération contrat");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -160,7 +197,7 @@ export default function ContratPage() {
           variables: {
             ...payload.variables,
             signature_data_url: signatureDataUrl,
-            signature_confirmed: signatureConfirmed,
+            signature_confirmed: true,
           },
         }),
       });
@@ -168,7 +205,12 @@ export default function ContratPage() {
         const txt = await res.text();
         throw new Error(txt || `Erreur API ${res.status}`);
       }
-      await res.blob();
+      const blob = await res.blob();
+      const nextUrl = URL.createObjectURL(blob);
+      setPdfUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return nextUrl;
+      });
       alert("Contrat signé envoyé.");
     } catch (e) {
       setError(e?.message || "Erreur génération contrat signé");
@@ -268,7 +310,14 @@ export default function ContratPage() {
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <button
               type="button"
-              onClick={() => setSignatureConfirmed(true)}
+              onClick={async () => {
+                if (!signatureDataUrl) return;
+                setSignatureConfirmed(true);
+                await regeneratePreview({
+                  signature_data_url: signatureDataUrl,
+                  signature_confirmed: true,
+                });
+              }}
               disabled={!signatureDataUrl}
               style={{
                 padding: "10px 14px",

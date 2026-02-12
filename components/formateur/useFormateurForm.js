@@ -426,6 +426,14 @@ export function useFormateurForm({ onSubmitForm }) {
     }
 
     updateField(name, file);
+
+    // Diplômes/certifications: accepté immédiatement, sans vérification distante
+    if (name === "diplomes") {
+      setStatus(name, "OK");
+      setMessage(name, "✅ Document validé");
+      return;
+    }
+
     await verifyOtherDoc(name, file);
   };
 
