@@ -107,6 +107,18 @@ function HomePage({ onGetStarted }) {
             Créer mon profil gratuitement
             <span style={styles.ctaArrow}>→</span>
           </button>
+          <button
+            onClick={() => (window.location.href = "/digitalisation")}
+            style={styles.digitalisationButton}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "#e2e8f0";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "#f1f5f9";
+            }}
+          >
+            Ouvrir Digitalisation
+          </button>
 
           <div style={styles.trustBadges}>
             <span style={styles.trustItem}>✓ Gratuit</span>
@@ -295,6 +307,18 @@ const styles = {
   ctaArrow: {
     fontSize: "20px",
     transition: "transform 0.3s ease",
+  },
+  digitalisationButton: {
+    marginLeft: "12px",
+    backgroundColor: "#f1f5f9",
+    color: "#0f172a",
+    border: "1px solid #cbd5e1",
+    padding: "20px 26px",
+    borderRadius: "16px",
+    fontSize: "16px",
+    fontWeight: "700",
+    cursor: "pointer",
+    transition: "all 0.2s ease",
   },
   trustBadges: {
     display: "flex",
